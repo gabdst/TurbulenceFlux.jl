@@ -99,12 +99,12 @@ end
 
 Compute the time-scale decomposition of the flux `wθ` given averaging and wavelet kernel parameters `time_params` and `scale_params` .
 
-`w` and `θ` are real input vectors of the same size. The flux is computed using:
+`w` and `θ` are real input vectors of the same size. The flux is decomposed using:
 
 ```math
-F_{w\\theta}(u,\\xi) = \\langle w * \\psi_\\xi , (\\theta * \\psi _xi ) \\phi_u
+F_{w\\theta}(u,\\xi) = \\langle w * \\psi_\\xi , (\\theta * \\psi_xi ) \\phi_u\\rangle
 ```
-where ``\\phi_u`` is the averaging kernel centered at time ``u`` and ``\\psi_\\xi`` a wavelet with parameters ``\\xi``
+where ``\\phi_u`` is the averaging kernel centered at time ``u`` and ``\\psi_\\xi`` a wavelet with parameters ``\\xi``.
 
 # Arguments
 
