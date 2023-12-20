@@ -214,7 +214,7 @@ function turbu_extract_laplacian(τ_rey_w;time_sampling,freq_peak,
                                   δ_τ=-6,
                                   mean_wind=nothing,
                                   ref_dist=1,
-                                  weighted_laplacian=true,
+                                  weighted_laplacian=false,
                                   weight_type=:value,
                                  )
   S=size(τ_rey_w)
