@@ -175,7 +175,7 @@ function generate_weight_mat(adj_mat::SparseMatrixCSC,weight_func::Function;norm
     weight_mat=sparse(I,J,W,size(adj_mat)...)
     weight_vertex=sum(weight_mat,dims=2)
     for k in 1:length(W)
-      W[k] = W[k] / (weight_vertex[J[k]]*weight_vertex[I[k]])
+      W[k] = W[k] / weight_vertex[I[k]]
     end
   end
   return sparse(I,J,W,size(adj_mat)...)
@@ -191,21 +191,6 @@ function make_gaussian_kernel(size_Z,vertex_mapping::Function,Σ::AbstractMatrix
     v =v_i-v_j
     d=dot(v,v' / Σ)
     return exp(-0.5*d)
-  end
-end
-
-function make_gaussian_kernel_2(size_Z,vertex_mapping::Function,Σ::AbstractMatrix)
-  C=CartesianIndices(size_Z)
-  function weight_func(i::Int,j::Int)
-    c_i=C[i]
-    c_j=C[j]
-    v_i=vertex_mapping(c_i)
-    v_j=vertex_mapping(c_j)
-    f=vertex_mapping(c_i)[end]
-    v =v_i-v_j
-    a=v[3] > 0 ? 1 : 2
-    d=dot(v,v' / Σ)
-    return a*exp(-0.5*d)
   end
 end
 

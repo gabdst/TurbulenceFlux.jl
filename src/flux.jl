@@ -288,35 +288,31 @@ function turbu_extract_diffusion(τ_w;time_sampling,freq_peak,ref_dist=1,mean_wi
   else
     vertex_mapping=(c::CartesianIndex) -> Float64[time_sampling[c[1]],log.(freq_peak[c[2]]*ref_dist/mean_wind[c[1]]),log(τ_w[c[1],c[2]])]
   end
-  X,Y,τ_mapped=map_idx(CI,vertex_mapping)
+  t,eta,τ_mapped=map_idx(CI,vertex_mapping)
   adj_mat=grid_adj_mat(S,mask)
-  function inc_func(i::Int,j::Int) 
-    if i<j
-      return nothing
-    else
-      c_i=CI[i]
-      c_j=CI[j]
-      v_i=vertex_mapping(c_i)
-      v_j=vertex_mapping(c_j)
-      v=v_i-v_j
-      return v
-    end
+  σ_τ = std(τ_mapped[mask[:]])
+  function weight_func(i::Int,j::Int) 
+    c_i=CI[i]
+    c_j=CI[j]
+    v_i=vertex_mapping(c_i)[3]
+    v_j=vertex_mapping(c_j)[3]
+    v=exp(-(v_i-v_j)/σ_τ) # Asymetric Potential
+    return v
   end
-  Δv = apply_func_on_edges(adj_mat,inc_func)
-  Δv = filter(!isnothing,Δv)
-  Σ=cov(Δv)
-  weight_func = make_gaussian_kernel(S,x->vertex_mapping(x),Σ)
   weights_mat = generate_weight_mat(adj_mat,weight_func;normalize=true)
   g = MyGraph(adj_mat,weights_mat)
-  s=-0.1 .< Y .< 0.1
-  s=sparse(vec(s))
-  M=sum(s)
-  func_acc(s,i)=begin
-      x=s .+ droptol!(g.weights*s,1e-6)
-      x=x*(M/sum(x))
-      return x
-  end
-  #all_s=accumulate(func_acc,1:10,init=s);
-  @warn  println("Not Fully implemented yet")
-  return (g,Δv,Σ,(X,Y,τ_mapped))
+  tau_rey=(reshape(t,S),reshape(eta,S),reshape(τ_mapped,S))
+  return (tau_rey,g)
+  # 
+#  s=-0.1 .< Y .< 0.1
+#  s=sparse(vec(s))
+#  M=sum(s)
+#  func_acc(s,i)=begin
+#      x=s .+ droptol!(g.weights*s,1e-6)
+#      x=x*(M/sum(x))
+#      return x
+#  end
+#  #all_s=accumulate(func_acc,1:10,init=s);
+#  @warn  println("Not Fully implemented yet")
+#  return (g,Δv,Σ,(X,Y,τ_mapped))
 end
