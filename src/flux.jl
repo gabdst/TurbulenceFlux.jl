@@ -41,16 +41,14 @@ function map_idx(CI, mapping)
 end
 
 """
-    time_integrate_flux(decomp,mask,density,fluxtype=nothing)
+  time_integrate_flux(decomp,mask)
 
-Integrate along the scale domain the flux `decomp` decomposed in the time-scale domain given the integration mask `mask` and convert it to flux unit using the density `density`.
+Integrate along the scale domain the flux `decomp` decomposed in the time-scale domain given the integration mask `mask`.
 
 Optionnaly a symbol `fluxtype`can be given to indicate the type of flux such that it is converted to common flux units, see `tofluxunits`.
 """
-function time_integrate_flux(decomp, mask, density, fluxtype=nothing)
+function time_integrate_flux(decomp, mask)
   size(mask) == size(decomp) || throw(error("Wrong size between mask and decomp"))
-  length(density) == size(decomp, 1) ||
-    throw(error("Wrong size along time axis between density and decomp"))
   F = Vector{Float64}(undef, size(decomp, 1))
   for j in axes(F, 1)
     values = decomp[j, mask[j, :]]
@@ -60,11 +58,7 @@ function time_integrate_flux(decomp, mask, density, fluxtype=nothing)
       F[j] = sum(decomp[j, mask[j, :]])
     end
   end
-  if isnothing(fluxtype)
-    return F .* density
-  else
-    return tofluxunits(F, density, fluxtype)
-  end
+  return F
 end
 
 
@@ -374,7 +368,6 @@ function flux_estimation(
   dates=(nothing, nothing),
   with_decomp=false,
   analysis_range=Colon(),
-  decomp_with_density=true,
   kwargs...,
 )
   sdate, edate = dates
@@ -444,31 +437,29 @@ function flux_estimation(
   mask_nomean = copy(mask_analysis) .&& .!(mask_σ_t) # Remove border errros
   mask_turbulence = mask_turbulence .&& .!(mask_σ_t) # Remove border errros
 
-  F_T_nomean, units_T = time_integrate_flux(decomp_T, mask_nomean, density, :SensibleHeat)
+  decomp_T,units_T = tofluxunits(decomp_T,density,:SensibleHeat)
+  decomp_CO2,units_CO2 = tofluxunits(decomp_CO2,density,:CO2)
+  decomp_H2O,units_H2O = tofluxunits(decomp_H2O,density,:H2O)
+
+  F_T_nomean, units_T = time_integrate_flux(decomp_T, mask_nomean)
   F_H2O_nomean, units_H2O =
-    time_integrate_flux(decomp_H2O, mask_nomean, density, :LatentHeat)
-  F_CO2_nomean, units_CO2 = time_integrate_flux(decomp_CO2, mask_nomean, density, :CO2)
+    time_integrate_flux(decomp_H2O, mask_nomean)
+  F_CO2_nomean, units_CO2 = time_integrate_flux(decomp_CO2, mask_nomean)
 
 
   F_T_noadvection, units_T =
-    time_integrate_flux(decomp_T, mask_noadvection, density, :SensibleHeat)
+    time_integrate_flux(decomp_T, mask_noadvection)
   F_H2O_noadvection, units_H2O =
-    time_integrate_flux(decomp_H2O, mask_noadvection, density, :LatentHeat)
+    time_integrate_flux(decomp_H2O, mask_noadvection)
   F_CO2_noadvection, units_CO2 =
-    time_integrate_flux(decomp_CO2, mask_noadvection, density, :CO2)
+    time_integrate_flux(decomp_CO2, mask_noadvection)
 
   F_T_turbulence, units_T =
-    time_integrate_flux(decomp_T, mask_turbulence, density, :SensibleHeat)
+    time_integrate_flux(decomp_T, mask_turbulence)
   F_H2O_turbulence, units_H2O =
-    time_integrate_flux(decomp_H2O, mask_turbulence, density, :LatentHeat)
+    time_integrate_flux(decomp_H2O, mask_turbulence)
   F_CO2_turbulence, units_CO2 =
-    time_integrate_flux(decomp_CO2, mask_turbulence, density, :CO2)
-
-  if decomp_with_density
-    decomp_T .*= density
-    decomp_CO2 .*= density
-    decomp_H2O .*= density
-  end
+    time_integrate_flux(decomp_CO2, mask_turbulence)
 
   if with_decomp
     decomp = Dict(
@@ -522,6 +513,7 @@ function flux_estimation(
   return results
 end
 
+#TODO: Optimise this, freq_tl is usually fixed WaveC can be used for multiple timelag optimisations
 function optim_timelag(w, θ, scale_params, freq_tl, τ_max)
   length(w) == length(θ) || throw(error("Signals must be of the same size."))
   work_dim = length(w)

@@ -18,5 +18,6 @@ export timescale_flux_decomp,
     amplitude_reynolds_w,
     get_timescale_mask,
     find_nan_regions,
-    optim_timelag
+    optim_timelag,
+    tofluxunits
 end
