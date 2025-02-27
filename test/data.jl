@@ -48,15 +48,10 @@ gmw_frame = TurbulenceFlux.GMWFrame(work_dim,gmw_params)
 σ_waves = gmw_frame.σ_waves
 averaging_kernel = TurbulenceFlux._gausskernel(work_dim,time_params.kernel_params[1],0)
 
-
 using BenchmarkTools
-out=[]
-b_1= @benchmark begin
-    decomp_T= timescale_flux_decomp(W,T,time_params,scale_params;with_info=true)
-    push!(out,decomp_T[end])
-end 
+b_1= @benchmark timescale_flux_decomp(W,T,time_params,scale_params;with_info=true) samples=10 seconds=100*60 evals=2
     
-b_2 = @benchmark begin 
-    decomp_T_cs=TurbulenceFlux.cross_scattering(W,T,Δt,gmw_frame.gmw_frame,averaging_kernel)
-    push!(out,decomp_T_cs)
-end 
+#b_2 = @benchmark begin 
+#    decomp_T_cs=TurbulenceFlux.cross_scattering(W,T,Δt,gmw_frame.gmw_frame,averaging_kernel)
+#    push!(out,decomp_T_cs)
+#end 
