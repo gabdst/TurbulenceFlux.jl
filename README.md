@@ -55,8 +55,8 @@ t = map(c->time_h[time_sampling[c[1]]],CI) # get the time values
 eta = map(c->to_eta(c[1],c[2]),CI)
 
 # time-frequency decomposition of CO2 flux
-time_sampling,(freq_peak,σ_t),decomp_CO2=timescale_flux_decomp(w,C,time_params,scale_params)
-decomp_CO2 = decomp_CO2 .* density # Convert to flux units
+time_sampling,(freq_peak,σ_t),decomp_FC=timescale_flux_decomp(w,C,time_params,scale_params)
+decomp_FC = decomp_FC .* density # Convert to flux units
 
 # Computation of the amplitude of Reynold's tensor vertical component τ_w
 _,_,τ_w = amplitude_reynolds_w(u,v,w,time_params_turbu,scale_params)
@@ -65,7 +65,7 @@ _,_,τ_w = amplitude_reynolds_w(u,v,w,time_params_turbu,scale_params)
 (masks,Δτ,itp) = turbu_extract_laplacian(t,eta,log10.(τ_w),δ_Δτ=1,δ_τ=1e-3)
 
 # Scale integration of the flux given the turbulence mask
-F_CO2=time_integrate_flux(decomp_CO2,masks.turbulence)
+FC=time_integrate_flux(decomp_FC,masks.turbulence)
 
-F_CO2 # CO2 flux
+FC # CO2 flux
 ```

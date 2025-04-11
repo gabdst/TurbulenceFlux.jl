@@ -10,16 +10,17 @@ const R = ustrip(PhysicalConstants.CODATA2018.R)
 
 "Convert vector `F` to flux of type `fluxtype` given the density `density`"
 function tofluxunits(F, density, fluxtype)
-  if fluxtype == :SensibleHeat
+  # Using Naming convention of FLUXNET
+  if fluxtype == :H
     F = F .* density * C_p
     units = u"J/m^2/s"
-  elseif fluxtype == :LatentHeat
+  elseif fluxtype == :LE
     F = F .* density * λ
     units = u"J/m^2/s"
-  elseif fluxtype == :CO2
+  elseif fluxtype == :FC # 
     F = F .* density
     units = u"μmol" / u"m^2" / u"s"
-  elseif fluxtype == :kinematic
+  elseif fluxtype == :TAUW # No convention here calling it TAUW instead of TAU as in the FLUXNET
     units = u"m^2" / u"s^2"
   else
     throw(error("wrong flux type"))
@@ -409,18 +410,18 @@ function flux_estimation(
   max_tl = max(abs(timelags[:H2O][1]), abs(timelags[:CO2][1]))
 
   # Time-Scale Analyses
-  time_sampling, (freq_peak, σ_t), decomp_CO2 =
+  time_sampling, (freq_peak, σ_t), decomp_FC =
     timescale_flux_decomp(W, CO2, time_params, scale_params; with_info=true)
-  _, _, decomp_T = timescale_flux_decomp(W, T, time_params, scale_params)
-  _, _, decomp_H2O = timescale_flux_decomp(W, H2O, time_params, scale_params)
-  _, _, τ_w = amplitude_reynolds_w(U, V, W, time_params_turbu, scale_params)
-  Z = log10.(τ_w)
+  _, _, decomp_H = timescale_flux_decomp(W, T, time_params, scale_params)
+  _, _, decomp_LE = timescale_flux_decomp(W, H2O, time_params, scale_params)
+  _, _, decomp_TAUW = amplitude_reynolds_w(U, V, W, time_params_turbu, scale_params)
+  Z = log10.(decomp_TAUW)
 
   σ_t = (σ_t[1] .+ max_tl, σ_t[2]) # add maximum timelag estimated as border error 
   mask_σ_t = get_timescale_mask(work_dim, σ_t..., (4, 4), false)[time_sampling, :] # convolution border errors mask
 
   to_eta(i_t, j_ξ) = log10(((z_d * freq_peak[j_ξ]) / mean_wind[i_t]))
-  S = size(decomp_T) # Dimension
+  S = size(decomp_H) # Dimension
   CI = CartesianIndices(S)
 
   t = map(c -> time_h[time_sampling[c[1]]], CI) # get the time values
@@ -428,53 +429,45 @@ function flux_estimation(
 
   (masks, Δτ, itp) =
     turbu_extract_laplacian(t, eta, Z, δ_Δτ=1, δ_τ=1e-3, mask_error=mask_σ_t)
-  mask_minima, mask_noadvection, mask_turbulence = masks
+  mask_minima, mask_NOADVEC, mask_TURBU = masks
   advec_line = itp.(time_h[time_sampling])
   advec_line = advec_line[analysis_range]
 
-  mask_analysis = falses(size(decomp_T)) # Restriction to period of analysis
+  mask_analysis = falses(size(decomp_H)) # Restriction to period of analysis
   mask_analysis[analysis_range, 1:(end-1)] .= true # We take everything during the analysis range period and without the first frequency peak at 0
-  mask_nomean = copy(mask_analysis) .&& .!(mask_σ_t) # Remove border errros
-  mask_turbulence = mask_turbulence .&& .!(mask_σ_t) # Remove border errros
+  mask_NOMEAN = copy(mask_analysis) .&& .!(mask_σ_t) # Remove border errros
+  mask_TURBU = mask_TURBU .&& .!(mask_σ_t) # Remove border errros
 
-  decomp_T,units_T = tofluxunits(decomp_T,density,:SensibleHeat)
-  decomp_CO2,units_CO2 = tofluxunits(decomp_CO2,density,:CO2)
-  decomp_H2O,units_H2O = tofluxunits(decomp_H2O,density,:H2O)
+  decomp_H,units_H = tofluxunits(decomp_H,density,:H) # convert to conventional units (here W/m2)
+  decomp_FC,units_FC = tofluxunits(decomp_FC,density,:FC)
+  decomp_LE,units_LE = tofluxunits(decomp_LE,density,:LE)
 
-  F_T_nomean, units_T = time_integrate_flux(decomp_T, mask_nomean)
-  F_H2O_nomean, units_H2O =
-    time_integrate_flux(decomp_H2O, mask_nomean)
-  F_CO2_nomean, units_CO2 = time_integrate_flux(decomp_CO2, mask_nomean)
+  H_NOMEAN = time_integrate_flux(decomp_H, mask_NOMEAN)
+  LE_NOMEAN = time_integrate_flux(decomp_H2O, mask_NOMEAN)
+  FC_NOMEAN = time_integrate_flux(decomp_CO2, mask_NOMEAN)
 
+  H_NOADVEC =    time_integrate_flux(decomp_H, mask_NOADVEC)
+  LE_NOADVEC =    time_integrate_flux(decomp_LE, mask_NOADVEC)
+  FC_NOADVEC =    time_integrate_flux(decomp_FC, mask_NOADVEC)
 
-  F_T_noadvection, units_T =
-    time_integrate_flux(decomp_T, mask_noadvection)
-  F_H2O_noadvection, units_H2O =
-    time_integrate_flux(decomp_H2O, mask_noadvection)
-  F_CO2_noadvection, units_CO2 =
-    time_integrate_flux(decomp_CO2, mask_noadvection)
-
-  F_T_turbulence, units_T =
-    time_integrate_flux(decomp_T, mask_turbulence)
-  F_H2O_turbulence, units_H2O =
-    time_integrate_flux(decomp_H2O, mask_turbulence)
-  F_CO2_turbulence, units_CO2 =
-    time_integrate_flux(decomp_CO2, mask_turbulence)
+  H_TURBU=    time_integrate_flux(decomp_H, mask_TURBU)
+  LE_TURBU=    time_integrate_flux(decomp_LE, mask_TURBU)
+  FC_TURBU=    time_integrate_flux(decomp_FC, mask_TURBU)
 
   if with_decomp
     decomp = Dict(
       pairs((;
         t,
         eta, #in log10
-        H=decomp_T,
-        FC=decomp_CO2,
-        LE=decomp_H2O,
-        TAU_W=Z, #in log10
-        DELTA_TAU=Δτ,
+        H=decomp_H,
+        FC=decomp_FC,
+        LE=decomp_LE,
+        TAUW=Z, #in log10
+        DELTA_TAUW=Δτ,
         mask_analysis,
         mask_minima,
-        mask_noadvection,
-        mask_turbulence,
+        mask_NOADVEC,
+        mask_TURBU,
         mask_σ_t,
       )),
     )
@@ -484,15 +477,15 @@ function flux_estimation(
 
   fluxes = Dict(
     pairs((;
-      F_T_nomean=F_T_nomean[analysis_range],
-      F_H2O_nomean=F_H2O_nomean[analysis_range],
-      F_CO2_nomean=F_CO2_nomean[analysis_range],
-      F_T_noadvection=F_T_noadvection[analysis_range],
-      F_H2O_noadvection=F_H2O_noadvection[analysis_range],
-      F_CO2_noadvection=F_CO2_noadvection[analysis_range],
-      F_T_turbulence=F_T_turbulence[analysis_range],
-      F_H2O_turbulence=F_H2O_turbulence[analysis_range],
-      F_CO2_turbulence=F_CO2_turbulence[analysis_range],
+      H_NOMEAN=H_NOMEAN[analysis_range],
+      LE_NOMEAN=LE_NOMEAN[analysis_range],
+      FC_NOMEAN=FC_NOMEAN[analysis_range],
+      H_NOADVEC=H_NOADVEC[analysis_range],
+      LE_NOADVEC=LE_NOADVEC[analysis_range],
+      FC_NOADVEC=FC_NOADVEC[analysis_range],
+      H_TURBU=H_TURBU[analysis_range],
+      LE_TURBU=LE_TURBU[analysis_range],
+      FC_TURBU=FC_TURBU[analysis_range],
     )),
   )
 
