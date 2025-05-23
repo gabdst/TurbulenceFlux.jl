@@ -1,226 +1,246 @@
-using Test
-import TurbulenceFlux:
-    init_wave_conv_kernel,
-    init_averaging_conv_kernel,
-    _init_parameters_wave,
-    _default_phase_kernel,
-    WaveletConv,
-    GaussConv,
-    get_time_deviation
-using FFTW, LinearAlgebra
+import TurbulenceFlux: CConv
+@testset "FFT-based Convolutional Kernel" begin
+    work_dim = 16
+    kernel_dim = work_dim
+    x = vcat(1, zeros(work_dim - 1))
+    kernel = randn(work_dim)
+    # Without padding
+    # Without phase
+    cconv = CConv(Float64, work_dim)
+    y = cconv(x, kernel; phase = 0)
+    @test isapprox(y, kernel)
+    # With phase compensation
+    @testset "Phase compensation: phase=$phase " for phase in [-3, -2, 0, 2, 3]
+        cconv = CConv(Float64, work_dim)
+        y = cconv(x, circshift(kernel, phase); phase)
+        @test isapprox(y, kernel)
+    end
+    # With padding it is more tricky to check phase compensation since signals the output is cropped 
+    # Without phase compensation
+    work_dim = 19
+    kernel_dim = 5
+    x = vcat(1, zeros(work_dim - 2), 0)
+    kernel = vcat(ones(kernel_dim), zeros(work_dim - kernel_dim))
+    padding = nextpow(2, work_dim) - work_dim
+    phase = 0
+    cconv = CConv(Float64, work_dim; padding)
+    y = cconv(x, kernel; phase)
+    @test isapprox(y, kernel)
+    # With phase compensation and padding
+    @testset "Phase compensation and padding" for kernel_dim in [4, 5], work_dim in [19, 18]
+        x = vcat(1, zeros(work_dim - 2), 0)
+        kernel = vcat(ones(kernel_dim), zeros(work_dim - kernel_dim))
+        phase = default_phase_kernel(kernel_dim)
+        cconv = CConv(Float64, work_dim; padding)
+        y = cconv(x, kernel; phase)
+        @test isapprox(y[1:(kernel_dim-phase)], kernel[1:(kernel_dim-phase)])
+        @test all(isapprox.(y[(kernel_dim-phase+1):end], 0, atol = 1e-6))
+    end
 
-work_dim = 1024
-wave_dim = work_dim
-kernel_dim = work_dim
-β = 2
-γ = 3
-J = floor(Int, log2(wave_dim))
-Q = 1
-wmin = 2pi / wave_dim
-wmax = pi
-Δt = 4
-time_sampling = 1:Δt:work_dim
+    @testset "Skipping Kernel Load" begin
+        work_dim = 16
+        kernel_dim = work_dim
+        x = vcat(1, zeros(work_dim - 1))
+        kernel = randn(work_dim)
+        # Without padding
+        # Without phase
+        cconv = CConv(Float64, work_dim)
+        y = cconv(x, kernel; phase = 0)
+        y_bis = cconv(x, randn(work_dim); load_kernel = false, phase = 0) # Dont update kernel
+        kernel_bis = randn(work_dim)
+        y_bis_2 = cconv(x, kernel_bis, phase = 0) # Update kernel
+        @test isapprox(y, kernel)
+        @test isapprox(y_bis, kernel)
+        @test isapprox(y_bis_2, kernel_bis)
+    end
+end
 
-# Checking convolution kernels are working properly
-## Self-dual property of the Wavelet Convolution Kernel
-@testset "Testing Wavelet Convolutions padding=$padding wave_dim=$wave_dim analytic=$analytic" for wave_dim in
-                                                                                [
-        wave_dim-1,
-        wave_dim,
-    ],
-    padding in [0, wave_dim - 1],
-    analytic in [true,false]
+@testset "GMWFrame" for wave_dim in [8192, 8191]
+    b = 1
+    g = 3
+    J = 6
+    Q = 2
+    wmin = 0
+    wmax = pi
+    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+    gmw = GMWFrame(sp)
+    # Test Ref to frame in sp
+    @test sp.frame[] === gmw
+    # Test Unit Power
+    power = sum(x -> norm(x)^2, gmw.frame)
+    @test isapprox(power, 1)
+    # Test Flat spectrum
+    spec = sum(map(x -> abs2.(fft(x)), gmw.frame))
+    target = ones(wave_dim)
+    @test isapprox(spec, target)
 
-    wave_params =
-        _init_parameters_wave(; β = β, γ = γ, J = J, Q = Q, wmin = wmin, wmax = wmax)
-
-    crop_range = 1:(work_dim + padding)
-
-    WaveC = WaveletConv(
-        (work_dim, 1),
-        (wave_dim, size(wave_params, 2));
-        crop_range ,
-        padding,
-        analytic,
-    )
-
-    # Check constant fourier spectrum
-    # Get the waves
-    waves = WaveC.kernel_func(WaveC, wave_params)
-    waves_fft = fft(waves, 1)
-
-    N=size(waves,1)
-    @test isapprox(sum(abs2, waves), 1, rtol = 0.01)
-    if analytic
-      if iseven(N)
-        target = vcat(1,2*ones(div(N,2)-2),1,zeros(N-div(N,2)))
-      else
-        target = vcat(1,2*ones(div(N,2)-1),zeros(N-div(N,2)))
-      end
-      @test isapprox(sum(abs2, waves_fft, dims = 2),target,rtol=0.1)
+    # Analytic case
+    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim; analytic = true)
+    gmw = GMWFrame(sp)
+    # Test Unit Power
+    power = sum(x -> norm(x)^2, gmw.frame)
+    @test isapprox(power, 1)
+    # Test Flat spectrum
+    spec = sum(map(x -> abs2.(fft(x)), gmw.frame))
+    if iseven(wave_dim)
+        target = vcat(
+            1,
+            2 * ones(div(wave_dim, 2) - 1),
+            1,
+            zeros(wave_dim - div(wave_dim, 2) - 1),
+        )
     else
-      @test isapprox(sum(abs2, waves_fft, dims = 2), ones(size(waves, 1)), rtol = 0.1)
+        target = vcat(1, 2 * ones(div(wave_dim, 2)), zeros(wave_dim - div(wave_dim, 2) - 1))
     end
+    @test isapprox(target, spec)
+end
 
-    δ = vcat(1, zeros(work_dim - 1))
-    waves_bis = WaveC(δ, wave_params)
-    @test isapprox(waves, waves_bis)
+@testset "CConv with GMWFrame" for wave_dim in [8192, 8191]
+    kernel_dim = work_dim = wave_dim
+    b = 1
+    g = 3
+    J = 6
+    Q = 2
+    wmin = 0
+    wmax = pi
+    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+    gmw = GMWFrame(sp)
+    x = vcat(1, zeros(work_dim - 1))
+    cconv = CConv(Float64, work_dim)
+    x_fft = [cconv(x, g) for g in gmw.frame]
+    # Test Unit Power
+    power = sum(x -> norm(x)^2, x_fft)
+    @test isapprox(power, 1)
+    # Test Flat spectrum
+    spec = sum(map(x -> abs2.(fft(x)), x_fft))
+    target = ones(wave_dim)
+    @test isapprox(target, spec)
+end
 
-    δ_ξ = sum(ifft(abs2.(waves_fft), 1), dims = 2)
-    if !analytic
-      @test isapprox(vcat(δ, zeros(padding)), δ_ξ, rtol = 0.1)
+@testset "Averaging Kernels" begin
+    sum_to_one(x::Vector{<:Real}) = isapprox(sum(x), 1)
+    sum_to_one(x::Vector{<:Vector{<:Real}}) = all(sum_to_one.(x))
+    function default_params(kernel_type::Symbol, kernel_dim)
+        if kernel_type == :gaussian
+            [kernel_dim / 10]
+        elseif kernel_type == :gaussian_exponential
+            [kernel_dim / 10, 0.5, 4]
+        elseif kernel_type == :rect
+            [kernel_dim / 10]
+        else
+            throw(error(""))
+        end
     end
-end
+    work_dim = 8192
+    kernel_dim = 8192
+    kernel_type = :gaussian
+    x = randn(work_dim)
+    y = randn(work_dim)
+    xy = x .* y
+    kernel_params = default_params(kernel_type, kernel_dim)
+    tp = TimeParams(kernel_dim, kernel_type, kernel_params)
+    xy_avg = average(xy, tp)
+    xy_dtavg = dt_average(xy, tp)
+    xy_dpavg = dp_average(xy, tp)
 
-@testset "Gaussian Averaging Kernel padding=$padding kernel_dim=$kernel_dim" for padding in
-                                                                                 [
-        0,
-        kernel_dim - 1,
-    ],
-    kernel_dim in [kernel_dim-1, kernel_dim]
+    @testset "Kernel: $kernel_type" for kernel_type in
+                                        [:gaussian, :gaussian_exponential, :rect],
+        kernel_dim in [32, 33]
 
-    crop_range = 1:(work_dim)
-    time_sampling = 1:Δt:work_dim
-    KernelC = GaussConv(
-        (work_dim, 1),
-        (kernel_dim, 1),
-        crop_range = crop_range,
-        padding = padding,
-    )
-    δ_train = zeros(work_dim)
-    δ_train[time_sampling] .= 1 # Flux of one every Δt => should get a constant average flux of 1/Δt
-    σ = [Δt / kernel_dim]
-    δ_train_KC = KernelC(δ_train, σ) # The gaussian reaches 0.6 at time index u=kernel_dim*sigma, if u/Δt is too low, it should break the consistency
-    @test isapprox(δ_train_KC, fill(1 / Δt, work_dim), rtol = 0.1)
-end
-
-@testset "Backend Flux test" begin
-
-    # Final check, putting together Wavelet and Gaussian Averaging Kernels
-    padding = wave_dim - 1
-    wave_params =
-        _init_parameters_wave(; β = β, γ = γ, J = J, Q = Q, wmin = 5 * wmin, wmax = wmax)
-    crop_range = 1:(work_dim + padding)
-    WaveC = WaveletConv(
-        (work_dim, 1),
-        (wave_dim, size(wave_params, 2)),
-        crop_range = crop_range,
-        padding = padding,
-    )
-
-    crop_range = (1:work_dim)
-    KernelC = GaussConv(
-        (work_dim + padding, size(wave_params, 2) + 1),
-        (kernel_dim, 1),
-        crop_range = crop_range,
-        padding = 0,
-    )
-    σ = [Δt / 128]
-
-    time_sampling = 1:Δt:work_dim
-    const_KC = 1 # KernelC(vcat(ones(work_dim), zeros(padding)), σ)[time_sampling]
-
-    δ_train = zeros(work_dim)
-    δ_train[time_sampling] .= 1 # Flux of one every Δt => should get a constant average flux of 1/Δt
-    δ_train_ξ = WaveC(δ_train, wave_params) .^ 2  # Square it
-    δ_train_ξ = dropdims(δ_train_ξ, dims = 3)
-    δ_train_ξ = KernelC(δ_train_ξ, σ) # Average it
-    δ_train_ξ = δ_train_ξ[time_sampling, 1, :] # Sample it
-    flux_value = sum(δ_train_ξ) / length(time_sampling) #  Sum it, should be 1/Δt, the average flux over the entire period is 1/Δt for the dirac_train
-    @test isapprox(flux_value, 1 / Δt, rtol = 0.1)
-end
-
-@testset "Frontend flux test work_dim=$(work_dim)" for work_dim in [(work_dim,1),(work_dim,2)]
-    scale_params = (
-        β = β,
-        γ = γ, 
-        J = J,
-        Q = Q, 
-        fmin = wmin / (2 * pi),
-        fmax = wmax / (2 * pi),
-        fs = 1,
-        wave_dim = wave_dim,
-    )
-
-    ((freq_peaks, σ_t), wave_params, WaveC) =
-        init_wave_conv_kernel(work_dim; scale_params..., with_sigma = true)
-
-    time_params = (
-        kernel_type = :gaussian,
-        kernel_dim = kernel_dim,
-        kernel_params = [Δt / kernel_dim],
-        Δt = Δt,
-    )
-    ((time_sampling, σ_t), mapped_kernel_params, KernelC) = init_averaging_conv_kernel(
-    (work_dim[1], size(wave_params, 2) + 1);
-        time_params...,
-        with_sigma = true,
-    )
-
-    σ = mapped_kernel_params
-    δ_train = zeros(work_dim)
-    δ_train[time_sampling, :] .= 1 # Flux of one every Δt => should get a constant average flux of 1/Δt
-
-    δ_train_ξ = WaveC(δ_train, wave_params) .^ 2  # Square it
-    for j in 1:work_dim[2]
-      x = view(δ_train_ξ,:,:,1)
-      x = KernelC(x, σ) # Average it
-      x = x[time_sampling, 1, :] # Sample it
-      flux_value = sum(x) / length(time_sampling) #  Sum it, should be 1/Δt, the average flux over the entire period is 1/Δt for the dirac_train
-
-      @test isapprox(flux_value, 1 / Δt, rtol = 0.1)
+        kernel_params = default_params(kernel_type, kernel_dim)
+        tp = TimeParams(kernel_dim, kernel_type, kernel_params)
+        avg_kernel = averaging_kernel(tp)
+        @test sum_to_one(avg_kernel)
+    end
+    @testset "Average func" for kernel_type in [:gaussian, :rect], kernel_dim in [16, 15]
+        work_dim = 64
+        kernel_params = default_params(kernel_type, kernel_dim)
+        # Center dirac at phase of the averaging_kernel
+        x = circshift(vcat(1, zeros(work_dim - 1)), default_phase_kernel(kernel_dim))
+        # No padding
+        tp = TimeParams(kernel_dim, kernel_type, kernel_params)
+        x_avg = average(x, tp)
+        @test isapprox(x_avg[1:kernel_dim], averaging_kernel(tp))
+        # With padding
+        tp = TimeParams(
+            kernel_dim,
+            kernel_type,
+            kernel_params;
+            padding = work_dim - kernel_dim,
+        )
+        x_avg = average(x, tp)
+        @test isapprox(x_avg[1:kernel_dim], averaging_kernel(tp))
+        x_avgs = average([x, circshift(x, 1)], tp)
+        @test isapprox(x_avgs[1][1:kernel_dim], averaging_kernel(tp))
+        @test isapprox(circshift(x_avgs[2], -1)[1:kernel_dim], averaging_kernel(tp))
     end
 end
 
-@testset "Frequency Correction with phase=$(phase) " for phase in [-5,5]
-  import GeneralizedMorseWavelets:wdomain
-  phase_corr = exp.(im*wdomain(phase,wave_dim,div(wave_dim,2)+1))
-  δ_dirac = vcat(1,zeros(work_dim-1))
-  δ_dirac_shifted = circshift(δ_dirac,-phase)
+@testset "Cross-Scalogram test" for work_dim in [8192, 8191]
+    function get_setup(work_dim, wave_dim, kernel_dim)
+        b = 1
+        g = 3
+        J = 6
+        Q = 2
+        wmin = 0
+        wmax = pi
+        x1 = circshift(vcat(1, zeros(work_dim - 1)), div(work_dim, 2)) # Center the signal
+        x2 = circshift(x1, 1)
+        x3 = x2 + x1
+        kernel_type = :gaussian
+        kernel_params = [kernel_dim / 10]
+        dp = DecompParams(;
+            b,
+            g,
+            J,
+            Q,
+            wmin,
+            wmax,
+            wave_dim,
+            kernel_dim,
+            kernel_type,
+            kernel_params,
+        )
+        gmw = GMWFrame(dp)
+        avg_kernel = averaging_kernel(dp)
+        L = Dict(:x1 => x1, :x2 => x2, :x3 => x3)
+        return L, gmw, avg_kernel, dp
+    end
+    work_dim = 8192 # padding is equal to 0 when size is pow of 2
+    kernel_dim = wave_dim = work_dim
+    L, gmw, avg_kernel, dp = get_setup(work_dim, wave_dim, kernel_dim)
+    out = cross_scalogram(L[:x1], L[:x1], dp, gmw, avg_kernel)
+    @test isapprox(sum(out), 1) # The flux is one between x1 and x1
+    out = cross_scalogram(L[:x1], L[:x2], dp, gmw, avg_kernel)
+    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
+    out = cross_scalogram(L[:x1], L[:x3], dp, gmw, avg_kernel)
+    @test isapprox(sum(out), 1) # The flux is one between x1 and x3
+    # Check that we obtain the same with or without next2pow padding
+    work_dim = 7777
+    kernel_dim = wave_dim = work_dim
+    L, gmw, avg_kernel, dp = get_setup(work_dim, wave_dim, kernel_dim)
+    x1, x2, x3 = L
+    out = cross_scalogram(L[:x1], L[:x1], dp, gmw, avg_kernel)
+    @test isapprox(sum(out), 1) # The flux is one between x1 and x1
+    out = cross_scalogram(L[:x1], L[:x2], dp, gmw, avg_kernel)
+    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
+    out = cross_scalogram(L[:x1], L[:x3], dp, gmw, avg_kernel)
+    @test isapprox(sum(out), 1) # The flux is one between x1 and x3
+    # An with reduced kernel sizes
+    L, gmw, avg_kernel, dp = get_setup(work_dim, div(wave_dim, 2), div(kernel_dim, 3))
+    x1, x2, x3 = L
+    out = cross_scalogram(L[:x1], L[:x1], dp, gmw, avg_kernel)
+    @test isapprox(sum(out), 1) # The flux is one between x1 and x1
+    out = cross_scalogram(L[:x1], L[:x2], dp, gmw, avg_kernel)
+    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
+    out = cross_scalogram(L[:x1], L[:x3], dp, gmw, avg_kernel)
+    @test isapprox(sum(out), 1) # The flux is one between x1 and x3
 
-  wave_params =
-      _init_parameters_wave(; β = β, γ = γ, J = J, Q = Q, wmin = wmin, wmax = wmax)
-
-  crop_range = 1:(work_dim)
-
-  WaveC = WaveletConv(
-      (work_dim, 1),
-      (wave_dim, size(wave_params, 2)),
-      crop_range = crop_range,
-      freq_corr = sqrt.(phase_corr)
-  )
-
-  out = fft(WaveC(δ_dirac,wave_params),1)
-  out .*= out
-  out = sum(ifft(out,1),dims=2)
-
-  @test isapprox(out[:]' * δ_dirac_shifted,1,rtol=0.1)
-end
-
-
-@testset "Frequency Correction with inverse filter" begin
-  import GeneralizedMorseWavelets:wdomain
-  work_dim=1024
-  N=wave_dim=128
-  w0 = 2pi*(div(N,2)+1)/N
-  filter_corr = 1 .+ wdomain(1,N,div(N,2)+1)/w0
-  sig_target = irfft(filter_corr,N)
-  δ_dirac = vcat(1,zeros(work_dim-1))
-
-  wave_params =
-      _init_parameters_wave(; β = β, γ = γ, J = J, Q = Q, wmin = wmin, wmax = wmax)
-
-  crop_range = 1:(work_dim)
-
-  WaveC = WaveletConv(
-      (work_dim, 1),
-      (wave_dim, size(wave_params, 2)),
-      crop_range = crop_range,
-      freq_corr = sqrt.(filter_corr)
-  )
-
-  out = fft(WaveC(δ_dirac,wave_params),1)
-  out .*= out # Convolution with self
-  out = sum(ifft(out,1),dims=2)
-  @test isapprox(sig_target,vcat(out[1:64],out[end-63:end]),rtol=0.1)
+    # Multiple Signals
+    C = Dict((:x1, :x2) => :x12, (:x1, :x3) => :x13, (:x2, :x3) => :x23, (:x2, :x1) => :x21)
+    out = cross_scalogram(L, C, dp, gmw, avg_kernel)
+    @test isapprox(sum(out[:x12]), 0, atol = 1e-6)
+    @test isapprox(sum(out[:x13]), 1)
+    @test isapprox(sum(out[:x23]), 1)
+    @test isapprox(out[:x12], out[:x21])
 end

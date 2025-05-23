@@ -1,432 +1,716 @@
-using Random, StatsFuns, FFTW
-using GeneralizedMorseWavelets
+function next2pow_padding(N, init_padding)
+    M = N + init_padding
+    return nextpow(2, M) - M
+end
 
-_map = StatsFuns.softplus
-_invmap = StatsFuns.invsoftplus
-_default_phase_kernel(kernel_dim) =
+default_phase_kernel(kernel_dim) =
     iseven(kernel_dim) ? div(kernel_dim, 2) - 1 : div(kernel_dim, 2)
 _copy_real!(x::AbstractArray{Float64}, y::AbstractArray{ComplexF64}) = map!(real, x, y)
 
-struct CConv{T<:Union{Float64,ComplexF64}} # 1D Convolution with constrained kernel
-    input_dim::Tuple{Integer,Integer}
-    output_dim::Tuple{Integer,Integer,Integer}
-    kernel_dim::Tuple{Integer,Integer}
-    padding::Integer
-    kernel_init_params::Function # Function to initialize parameters
-    kernel_func::Function
-    crop_phase_output!::Function # Function that prepares the output in buff_out
-
+mutable struct CConv{T<:Union{Float64,ComplexF64}}
+    const input_dim::Int64
+    const output_dim::Int64
+    const padding::Int64
+    const crop_range::Tuple{Int64,Int64}
     # Internals
-    ## In-Place FFT plans with associated buffers
-    buff_in::Array{ComplexF64}
-    pfft_in::Any
-    buff_work::Array{ComplexF64}
-    pfft_work::Any
-    pifft_work::Any
-    buff_out::Array{T}
+    const buff_in::Vector{ComplexF64}
+    const pfft_in::AbstractFFTs.Plan{ComplexF64}
+    const buff_ker::Vector{ComplexF64}
+    const pfft_ker::AbstractFFTs.Plan{ComplexF64}
+    const pifft_in::AbstractFFTs.Plan{ComplexF64}
+    const buff_out::Vector{T}
 end
 
-"""
-1D convolutional kernel
-
-It the input is NxM and the kernel function is NxP then the output is NxPxM. Each columns of the kernel is a different kernel applied on each column of the input resulting in PxM 1D convolutions.
-"""
 function CConv(
     ::Type{T},
-    input_dim::Tuple{Integer,Integer},
-    kernel_dim::Tuple{Integer,Integer};
-    kernel_init_params= ()->nothing,
-    kernel_func=(C,x)->identity(x),
-    phase_output = nothing,
+    input_dim::Int64;
     padding = 0,
-    crop_range = (1:input_dim[1]),
-    conv_dim = (input_dim[1] + padding, 1, input_dim[2]),
-    # Setting up internals in keywords 
-    buff_in = Array{ComplexF64}(undef, conv_dim[1], 1, conv_dim[3]),
-    pfft_in = plan_fft!(buff_in, 1),
-    buff_work = Array{ComplexF64}(undef, conv_dim[1], kernel_dim[2], input_dim[2]),
-    pfft_work = plan_fft!(buff_work, 1),
-    pifft_work = plan_ifft!(buff_work, 1),
+    crop_range = (1, input_dim),
 ) where {T<:Union{Float64,ComplexF64}}
-    if isnothing(phase_output) # Assuming centered kernel, the default phase is div(kernel_dim,2)
-        default_phase = -_default_phase_kernel(kernel_dim[1]) # compensate the default phase introduced in default kernel func
-        phase_output = [default_phase for _ = 1:input_dim[2]]
-    end
-
-    output_dim = (length(crop_range), kernel_dim[2], input_dim[2])
-    buff_out = Array{T}(undef, output_dim...)
-    crop_phase_output! = _make_crop_func(crop_range, phase_output, conv_dim, buff_out)
-
+    conv_dim = (input_dim + padding)
+    # Setting up internals in keywords 
+    buff_in = zeros(ComplexF64,conv_dim)
+    pfft_in = plan_fft!(buff_in)
+    buff_ker = zeros(ComplexF64,conv_dim)
+    pfft_ker = plan_fft!(buff_ker)
+    pifft_in = plan_ifft!(buff_in)
+    output_dim = crop_range[2] - crop_range[1] + 1
+    buff_out = Array{T}(undef, output_dim)
     return CConv{T}(
         input_dim,
         output_dim,
-        kernel_dim,
         padding,
-        kernel_init_params,
-        kernel_func,
-        crop_phase_output!,
+        crop_range,
         buff_in,
         pfft_in,
-        buff_work,
-        pfft_work,
-        pifft_work,
+        buff_ker,
+        pfft_ker,
+        pifft_in,
         buff_out,
     )
 end
 
-function initialparameters(rng::AbstractRNG, C::CConv)
-    C.kernel_init_params(rng) # inverse mapping of parameters
-end
-
-function getkernel(C::CConv, params::AbstractArray)
-    C.kernel_func(C, params) # parameters to kernel
-end
-
-function _load_sig!(C::CConv, X::AbstractArray{<:Real})
-    X = reshape(X, promote_shape(C.input_dim, size(X)))
+function _load_sig!(C::CConv, X::AbstractVector{<:Real})
     fill!(C.buff_in, 0.0) # Prepare zero padding
-    copy!(view(C.buff_in, axes(X, 1), 1, axes(X, 2)), X) # Copy signal on first and third axis
+    copy!(view(C.buff_in, axes(X, 1)), X)
+    # Signal loaded in buff_in
+    C.pfft_in * C.buff_in # buff_in in place fft of input X
     return C.buff_in
 end
 
-function _conv!(C::CConv, X::AbstractArray, kernel::AbstractArray, flip_kernel::Bool)
-    C.buff_in === X || copy!(C.buff_in, X) # input is buff_in, nothing to copy
-    C.pfft_in * C.buff_in # buff_in in place fft of input X
-    # kernel has been copied to buff_work
-    if C.buff_work !== kernel
-        C.buff_work[:, :, 1] .= kernel
-        for k in axes(C.buff_work, 3)[2:end]
-            C.buff_work[:, :, k] .= view(C.buff_work, :, :, 1)
-        end
+function _load_kernel!(C::CConv, kernel::AbstractVector{<:Real}, flip_kernel, phase)
+    fill!(C.buff_ker, 0.0) # Prepare zero padding
+    copy!(view(C.buff_ker, axes(kernel, 1)), kernel)
+    if phase != 0 # Correct Phase
+        circshift!(C.buff_ker, -phase)
     end
-    C.pfft_work * C.buff_work # buff_work in place fft of kernel
+    # Kernel Loaded in buff_ker
+    C.pfft_ker * C.buff_ker # buff_ker in place fft of kernel
     if flip_kernel
-        conj!(C.buff_work)
+        conj!(C.buff_ker)
     end
-    # TODO implement 2D fast fourier
-    C.buff_work .*= C.buff_in
-    C.pifft_work * C.buff_work # buff_work in place ifft
-    C.crop_phase_output!(C.buff_work) # update buff_out
+    return C.buff_ker
 end
 
-function (C::CConv)(X::AbstractArray{<:Real}, params, flip_kernel = false)
-    X = _load_sig!(C, X)
-    kernel = getkernel(C, params)
-    _conv!(C, X, kernel, flip_kernel)
+function _conv!(C::CConv)
+    # In place multiplication in buff_in
+    C.buff_in .*= C.buff_ker
+    C.pifft_in * C.buff_in# buff_in place ifft
+    _crop_out!(C) # Crop in buff_out!
+end
+
+function _crop_out!(C::CConv)
+    # Crop then correct the phase and not the other way
+    Y_v = view(C.buff_in, C.crop_range[1]:C.crop_range[2])
+    if eltype(C.buff_out) <: Real
+        _copy_real!(C.buff_out, Y_v)
+    else
+        copyto!(C.buff_out, Y_v)
+    end
+    return C.buff_out
+end
+
+function (C::CConv)(
+    X::AbstractArray{<:Real},
+    kernel::AbstractVector{<:Union{Real,Complex}};
+    flip_kernel = false,
+    load_kernel = true,
+    phase = default_phase_kernel(length(kernel)),
+)
+    _load_sig!(C, X)
+    if load_kernel
+        _load_kernel!(C, kernel, flip_kernel, phase)
+    end
+    _conv!(C)
     return copy(C.buff_out)
 end
 
-# Croping and phasing function operating on the output buffer buff_out
-function _make_crop_func(crop_range, phase_output, output_dim, buff_out::AbstractArray)
-    function crop_phase_func!(Y)
-        for j = 1:output_dim[2], k = 1:output_dim[3]
-            Y_v = view(Y, :, j, k)
-            circshift!(Y_v, phase_output[k])
-            Y_v = view(Y_v, crop_range)
-            buff_out_v = view(buff_out, :, j, k)
-            if eltype(buff_out_v) <: Real
-              _copy_real!(buff_out_v, Y_v)
-            else
-              copyto!(buff_out_v,Y_v)
-            end
-        end
-        return buff_out
-    end
-    return crop_phase_func!
+struct GMWFrame
+    wave_dim::Integer # N
+    params::AbstractVector{<:AbstractVector{<:Real}} # a,u,β,γ, Px4
+    frame::AbstractVector{<:AbstractVector{<:Union{Real,Complex}}} # (P+1)xN
+    freq_peaks::Vector{Float64} # P+1
+    sigmas::Array{Float64} # P+1
+    selfdual::Bool
+    analytic::Bool
 end
 
-## wavelet kernel init from a finite number of fixed parameters
-function _init_parameters_wave(
-    rng = nothing;
-    β = 1,
-    γ = 3,
-    J = 32,
-    Q = 2,
-    wmin = 0,
-    wmax = pi,
-) # rng not used, kept however
-    params = gmw_grid(β, γ, J, Q, wmin, wmax, 0)
-    return hcat(params...)
+"""
+    ScaleParams(b, g, J, Q, wmin, wmax, wave_dim, analytic, padding, frame)
+
+A struct to hold parameters for time-frequency scale decomposition.
+
+# Fields
+- `b::Real`: First parameter of the Generalized Morse Wavelet (e.g. `1`)
+- `g::Real`: Second parameter of the Generalized Morse Wavelet (e.g. `3`)
+- `J::Int`: Number of octaves (e.g. `floor(Int(log2(wave_dim)))`)
+- `Q::Int`: Number of inter-octaves (e.g. `3`)
+- `wmin::Real`: Minimum frequency pulsation (e.g. `2*pi/wave_dim`)
+- `wmax::Real`: Maximum frequency pulsation (e.g. `pi`)
+- `wave_dim::Int`: Size of the wavelet transform. 
+- `analytic::Bool`: If `true`, uses analytic wavelets.
+- `padding::Int`: Zero-padding length for the transform.
+- `frame::Ref{GMWFrame}`: Reference to the `GMWFrame` object used for the decomposition.
+"""
+mutable struct ScaleParams
+    const b::Real
+    const g::Real
+    const J::Int
+    const Q::Int
+    const wmin::Real
+    const wmax::Real
+    const wave_dim::Int
+    const analytic::Bool
+    const padding::Int
+    frame::Ref{GMWFrame}
 end
 
-function _wf_get_gmfs!(buff_work,params,L,N)
-    # Fill buff_work with zeros (does non-analytical part zero padding + time zero padding)
-    fill!(buff_work, 0.0)
-
-    # Fill buff_work of analytical wavelets
-    for j in axes(params, 2)
-        a = params[1, j]
-        β = params[3, j]
-        γ = params[4, j]
-        b_v = view(buff_work, 1:L, j, 1)
-        gmw!(b_v, 0, a, 0, β, γ, N, :peak)
-    end
-    return buff_work
-end
-
-function _wf_get_lp!(buff_work,params,L,N,K)
-    # Create the Low-Pass
-    b_v = view(buff_work, 1:L, K, 1)
-    w = (0:(L - 1)) / N
-    freq_peaks = mapslices(p -> peak_n(p, 1), params, dims = 1)
-    w0 = minimum(freq_peaks)
-    ϕ = exp.(-(3 * log(10) / 20) * (w / w0) .^ 2) # -3dB at w=w0
-    b_v .= ϕ
-    return b_v
-end
-
-function _wf_make_selfdual!(buff_work,N,L,selfdual,analytic)
-    b_v = view(buff_work, 1:L, :, 1)
-    if selfdual
-      # Normalization
-      ψ_norm = sqrt.(sum(abs2, b_v, dims = 2))
-      if analytic
-        if iseven(N)
-          ψ_norm[2:(L-1)] /=sqrt(2)
-        else
-          ψ_norm[2:L] /=sqrt(2)
-        end
-      end
-      b_v ./= ψ_norm
-    end
-    return b_v
-end
-
-function _wf_to_time!(buff_work,buff_work_v,pifft_wave,N,L,analytic)
-    # Real part of inverse discrete fourier transform of analytical signal: need half coeffs at k=0 and k=N/2 (only if N is even)
-    # We need to do this as we are not using irfft functions only plan_fft and plan_ifft, if we take the real part of the inverse discrete fourier transform we have to halve some coeffs
-    if !analytic
-      buff_work[1, :, 1] /= 2
-      buff_work_v[L, :, 1] /= iseven(N) ? 2 : 1
-    end
-
-    # All good: copy first slice along third dimension
-    for i in axes(buff_work, 3)[2:end]
-        buff_work[:, :, i] .= buff_work[:, :, 1]
-    end
-
-    pifft_wave * buff_work_v # In place inverse fourier transform
-    if !analytic
-      map!(x -> 2 * real(x), buff_work_v, buff_work_v) # Take 2*Real(ψ) but with properly halved coefficients at k=0 and k=N/2
-    end
-    for j in axes(buff_work, 2), k in axes(buff_work, 3)
-        b_v = view(buff_work, 1:N, j, k)
-        circshift!(b_v, _default_phase_kernel(N))
-    end
-    return buff_work
-end
-
-function _wavelet_frame(
-    C::CConv,
-    params::AbstractArray{<:Real},
-    kernel_dim::Tuple{Integer,Integer},
-    buff_work::AbstractArray{<:Complex},
-    buff_work_v::AbstractArray{<:Complex},
-    pifft_wave,
-    freq_corr::Union{Real,AbstractArray{<:Complex}} = 1,
-    selfdual=true,
-    analytic=false,
+ScaleParams(
+    b,
+    g,
+    J,
+    Q,
+    wmin,
+    wmax,
+    wave_dim;
+    analytic = false,
+    padding = 0,
+) = ScaleParams(
+    b,
+    g,
+    J,
+    Q,
+    wmin,
+    wmax,
+    wave_dim,
+    analytic,
+    padding,
+    Ref{GMWFrame}(),
 )
-    K = size(params, 2) + 1  # Number of wavelets + 1 low pass
-    N = kernel_dim[1] # Wavelet size
-    L = div(N, 2) + 1 # Analytical fft size
-    (K - 1) == kernel_dim[2] || throw(error("Wrong size"))
 
-    _wf_get_gmfs!(buff_work,params,L,N)
 
-    _wf_get_lp!(buff_work,params,L,N,K)
+"""
+    TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
 
-    _wf_make_selfdual!(buff_work,N,L,selfdual,analytic)
+A struct to hold parameters for time-domain averaging and sampling.
 
-    # Frequency Correction
-    b_v = view(buff_work, 1:L, :, 1)
-    b_v .*= freq_corr
-
-    _wf_to_time!(buff_work,buff_work_v,pifft_wave,N,L,analytic)
-
-    return buff_work
+# Fields
+- `kernel_dim::Int`: Size of the averaging kernel. 
+- `kernel_type::Symbol`: Type of kernel (e.g., `:gaussian`, `:rect`).
+- `kernel_params::AbstractArray{<:Real}`: Parameters defining the kernel (e.g., standard deviation for Gaussian).
+- `dt::Int`: Sampling time step.
+- `padding::Int`: Zero-padding length for the time-domain averaging.
+"""
+struct TimeParams
+    kernel_dim::Int
+    kernel_type::Symbol
+    kernel_params::AbstractArray{<:Real}
+    dt::Int
+    padding::Int
 end
 
-function WaveletConv(input_dim, kernel_dim; padding = 0, freq_corr = 1, selfdual=true, analytic=false,conv_kwargs...)
-    conv_dim = (input_dim[1] + padding, kernel_dim[2] + 1, input_dim[2])
-    buff_work = Array{ComplexF64}(undef, conv_dim)
-    buff_work_v = view(buff_work, 1:kernel_dim[1], :, :)
-    pifft_wave = plan_ifft!(buff_work_v, 1)
-    #kernel_func(C::CConv,wave_fft) = _wavefft_to_wavetime!(C,wave_fft,buff_work,buff_work_v,pifft_wave)
-    kernel_func(C::CConv, params) =
-        _wavelet_frame(C, params, kernel_dim, buff_work, buff_work_v, pifft_wave, freq_corr, selfdual, analytic)
-    return_type = analytic ? ComplexF64 : Float64
-    CConv(
-        return_type,
-        input_dim,
-        (kernel_dim[1], kernel_dim[2] + 1);
-        kernel_init_params = () -> nothing,
-        kernel_func = kernel_func,
-        buff_work = buff_work,
-        padding = padding,
-        conv_dim = conv_dim,
-        conv_kwargs...,
-    )
+TimeParams(
+    kernel_dim::Int,
+    kernel_type::Symbol,
+    kernel_params::AbstractArray{<:Real};
+    dt::Int = 1,
+    padding::Int = 0,
+) = TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
+
+
+"""
+    DecompParams(sp, tp)
+
+A struct to hold parameters for time-frequency decomposition and time averaging.
+
+# Fields
+- `sp::ScaleParams`: Parameters for scale (time-frequency) decomposition.
+- `tp::TimeParams`: Parameters for time-domain averaging.
+"""
+struct DecompParams
+    sp::ScaleParams
+    tp::TimeParams
 end
 
-function _gausskernel(kernel_dim, params, padding)
-    σ = params[1]
-    u = length(params) == 2 ? params[2] : 0
-    t = LinRange(0, 1, kernel_dim)
-    g = exp.(-0.5 * ((t .- 0.5 .+ u) / σ) .^ 2)
-    g = vcat(g, zeros(padding))
+ScaleParams(dp::DecompParams) = dp.sp
+TimeParams(dp::DecompParams) = dp.tp
+
+function DecompParams(;
+    b::Real,
+    g::Real,
+    J::Int,
+    Q::Int,
+    wmin::Real,
+    wmax::Real,
+    wave_dim::Int,
+    kernel_dim::Int,
+    kernel_type::Symbol,
+    kernel_params::AbstractArray{<:Real},
+    dt::Int = 1,
+    analytic::Bool = false,
+    padding::Int = 0,
+)
+    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim; analytic, padding)
+    tp = TimeParams(kernel_dim, kernel_type, kernel_params; dt, padding)
+    return DecompParams(sp, tp)
+end
+
+function wavelet_parameters(b, g, J, Q, wmin, wmax)
+    return GMW.gmw_grid(b, g, J, Q, wmin, wmax, 0)
+end
+wavelet_parameters(; b, g, J, Q, wmin, wmax) = wavelet_parameters(b, g, J, Q, wmin, wmax)
+wavelet_parameters(sp::ScaleParams) =
+    wavelet_parameters(sp.b, sp.g, sp.J, sp.Q, sp.wmin, sp.wmax)
+wavelet_parameters(dp::DecompParams) = wavelet_parameters(ScaleParams(dp.sp))
+
+frequency_peaks(dp::DecompParams) = frequency_peaks(ScaleParams(dp))
+frequency_peaks(sp::ScaleParams) =
+    vcat(map(p -> GMW.peak_n(p, 1), wavelet_parameters(sp)), 0.0)
+
+_gauss(t, p) = exp(-0.5 * (t / p) .^ 2)
+_dtgauss(t, p) = -(t / p^2) * _gauss(t, p)
+_dpgauss(t, p) = -(t^2 / p^3) * _gauss(t, p)
+function gausskernel(kernel_dim, kernel_params)
+    p = kernel_params[1]
+    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
+    g = _gauss.(t, p)
     g = g / sum(g)
     return g
 end
 
-function GaussConv(input_dim, kernel_dim; padding = 0, conv_kwargs...)
-    conv_dim = (input_dim[1] + padding, 1, input_dim[2])
-    kernel_func(C::CConv, params) = reshape(
-        _gausskernel(kernel_dim[1], params, conv_dim[1] - kernel_dim[1]),
-        conv_dim[1],
-        1,
-        1,
-    )
-    CConv(
-        Float64,
-        input_dim,
-        kernel_dim;
-        kernel_init_params = () -> nothing,
-        kernel_func = kernel_func,
-        conv_dim = conv_dim,
-        padding = padding,
-        conv_kwargs...,
-    )
+function dt_gausskernel(kernel_dim, kernel_params)
+    p = kernel_params[1]
+    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
+    g = _gauss.(t, p)
+    dg = _dtgauss.(t, p)
+    g = dg / sum(g)
 end
 
-#function _rectkernel(C::CConv, params)
-#    dim = C.kernel_dim
-#    padding = params[1]
-#    zero_padding = zeros(padding)
-#    N = dim - padding * 2
-#    if N <= 0
-#        throw(
-#            error(
-#                "The dimension of the kernel must be higher than the total amount of padding, i.e. kernel_dim > 2*padding",
-#            ),
-#        )
-#    end
-#    kernel = vcat(zero_padding, ones(N), zero_padding, zeros(C.input_dim[1] - dim)) / N
-#    return kernel
-#end
-#_rectkernel_init_params(rng::AbstractRNG) = [0]
-#
-#function RectConv(input_dim, kernel_dim; conv_kwargs...)
-#    CConv(
-#        input_dim,
-#        kernel_dim;
-#        kernel_init_params = _rectkernel_init_params,
-#        kernel_func! = _rectkernel,
-#        conv_kwargs...,
-#    )
-#end
-
-"""
-    init_wave_conv_kernel(work_dim;β,γ,J,Q,wmin,wmax,wave_dim,fs,with_sigma=false)
-
-Initialize a wavelet convolutional kernel. With padding and same dimension as input.
-
-# Arguments
-  - `work_dim::Union{Integer,Tuple{Integer,Integer}}`: Input dimension
-  - `wave_dim::Integer`: maximum time support in time index of wavelets
-  - `β::Float64`: First shape parameter of Generalized Morse Wavelets
-  - `γ::Float64`: Second shape parameter
-  - `J::Integer`: Number of frequency octaves
-  - `Q::Integer`: Number of frequency inter-octaves
-  - `fmin::Float64`: Minimum frequency peak allowed
-  - `fmax::Float64`: Maximum and starting frequency peak allowed
-  - `fs`: Sampling frequency
-  - `with_sigma=false`: Return wavelet filters time deviation
-"""
-function init_wave_conv_kernel(
-    work_dim::Union{Integer,Tuple{Integer,Integer}};
-    β::Real,
-    γ::Real,
-    J::Integer,
-    Q::Integer,
-    fmin::Real,
-    fmax::Real,
-    wave_dim::Integer,
-    fs::Real,
-    with_sigma = false,
-)
-    wmin = fmin * 2pi / fs
-    wmax = fmax * 2pi / fs
-
-    wave_params =
-        _init_parameters_wave(; β = β, γ = γ, J = J, Q = Q, wmin = wmin, wmax = wmax)
-    K = length(wave_params)
-    freq_peaks = mapslices(p -> peak_n(p, 1) * fs, wave_params, dims = 1)
-    freq_peaks = vcat(freq_peaks[:], 0.0)
-    work_dim = work_dim isa Integer ? (work_dim, 1) : work_dim
-    WaveC = WaveletConv(work_dim, (wave_dim, size(wave_params, 2)))
-    if with_sigma
-      σ_t = get_time_deviation(WaveC,wave_params,wave_dim)
-    else
-      σ_t = nothing
-    end
-    return ((freq_peaks, σ_t), wave_params, WaveC)
+function dp_gausskernel(kernel_dim, kernel_params)
+    p = kernel_params[1]
+    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
+    g = _gauss.(t, p)
+    dpg = _dpgauss.(t, p)
+    s = sum(g)
+    ds = sum(dpg)
+    g = (s * dpg - ds * g) / s^2
 end
 
-function get_time_deviation(WaveC,wave_params,wave_dim)
-  waves = WaveC.kernel_func(WaveC, wave_params)
-  phase = _default_phase_kernel(wave_dim)
-  r = range(start = phase+1, length = (wave_dim-phase-1))
-  t = (0:(length(r) - 1))
-  waves_v = abs2.(view(waves, r, :, 1))
-  waves_v ./= sum(waves_v, dims = 1)
-  waves_v .*= abs2.(t)
-  σ_t = dropdims(sqrt.(sum(waves_v, dims = 1)), dims = 1)
-  return σ_t
+function gauss_expo_kernel(kernel_dim, kernel_params)
+    s, alpha, n = kernel_params
+    sigmas = exp.([log(s) + i * log(alpha) for i = 0:(n-1)])
+    return [gausskernel(kernel_dim, sigma) for sigma in sigmas]
 end
 
-function get_frequency_peaks(wave_params,fs=1)
-    freq_peaks = mapslices(p -> peak_n(p, 1) * fs, wave_params, dims = 1)
-    freq_peaks = vcat(freq_peaks[:], 0.0)
-    return freq_peaks
+function dt_gauss_expo_kernel(kernel_dim, kernel_params)
+    s, alpha, n = kernel_params
+    sigmas = exp.([log(s) + i * log(alpha) for i = 0:(n-1)])
+    return [dt_gausskernel(kernel_dim, sigma) for sigma in sigmas]
 end
 
-"""
-    init_averaging_conv_kernel(work_dim;kernel_type,kernel_params,Δt,kernel_dim,with_sigma=false)
+function dp_gauss_expo_kernel(kernel_dim, kernel_params)
+    s, alpha, n = kernel_params
+    sigmas = exp.([log(s) + i * log(alpha) for i = 0:(n-1)])
+    return [dp_gausskernel(kernel_dim, sigma) for sigma in sigmas]
+end
 
-Initiliaze an averaging convolutional kernel.
+function rectkernel(kernel_dim, kernel_params)
+    n = kernel_dim
+    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
+    T = kernel_params[1] / 2
+    g = zeros(Float64, n)
+    g[abs.(t).<=T] .= 1
+    g = g / sum(g)
+    return g
+end
 
-It returns the range for sampling in time, the original parameter mapped in (-∞,+∞) and the kernel.
+averaging_kernel(tp::TimeParams) =
+    averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
+averaging_kernel(dp::DecompParams) =
+    averaging_kernel(dp.tp.kernel_type, dp.tp.kernel_params, dp.tp.kernel_dim)
 
-# Arguments
-  - `work_dim::Union{Integer,Tuple{Integer,Integer}}`: Input dimension
-  - `kernel_dim::Integer`: Maximum time support for the averaging kernel
-  - `kernel_type::Symbol`: Type of kernel used for the averaging kernel
-  - `kernel_params::Vector`: Vector of parameters for the averaging kernel
-  - `Δt::Integer`: Time Sampling step of the output flux.
-  - `with_sigma=false`: Return time deviation
-"""
-function init_averaging_conv_kernel(
-    work_dim::Union{Integer,Tuple{Integer,Integer}};
+function averaging_kernel(
     kernel_type::Symbol,
     kernel_params::AbstractArray{<:Real},
-    Δt::Integer,
     kernel_dim::Integer,
-    with_sigma = false,
 )
-    time_sampling = 1:Δt:work_dim[1]
-    work_dim = work_dim isa Integer ? (work_dim, 1) : work_dim
     if kernel_type == :gaussian
-      KernelC = GaussConv(work_dim, (kernel_dim, 1))
-        
-      if with_sigma
-          σ_t = KernelC.kernel_dim[1] * kernel_params[1]
-      else
-          σ_t = nothing
-      end
+        avg_kernel = gausskernel(kernel_dim, kernel_params)
+    elseif kernel_type == :gaussian_exponential
+        avg_kernel = gauss_expo_kernel(kernel_dim, kernel_params)
+    elseif kernel_type == :rect
+        avg_kernel = rectkernel(kernel_dim, kernel_params)
     else
-      throw(error("Kernel type $(kernel_type) not implemented"))
+        avg_kernel = []
+        throw(ArgumentError("Kernel type $(kernel_type) not implemented"))
+    end
+    return avg_kernel
+end
+
+function dt_fft(x::AbstractArray{<:Real})
+    N = length(x)
+    if iseven(N)
+        Nh = div(N, 2)
+        k = collect(Complex(0, 2pi / N) * ((-Nh+1):Nh))
+        k[end] = 0
+        circshift!(k, -Nh + 1)
+    else
+        Nh = div(N, 2)
+        k = collect(Complex(0, 2pi / N) * ((-Nh):Nh))
+        circshift!(k, -Nh)
+    end
+    return real(ifft(fft(x) .* k))
+end
+
+dt_averaging_kernel(tp::TimeParams) =
+    dt_averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
+dt_averaging_kernel(dp::DecompParams) =
+    dt_averaging_kernel(dp.tp.kernel_type, dp.tp.kernel_params, dp.tp.kernel_dim)
+
+function dt_averaging_kernel(
+    kernel_type::Symbol,
+    kernel_params::AbstractArray{<:Real},
+    kernel_dim::Integer,
+)
+    if kernel_type == :gaussian
+        avg_kernel = dt_gausskernel(kernel_dim, kernel_params)
+    elseif kernel_type == :gaussian_exponential
+        avg_kernel = dt_gauss_expo_kernel(kernel_dim, kernel_params)
+    else
+        avg_kernel = []
+        throw(ArgumentError("dt Kernel type $(kernel_type) not implemented"))
+    end
+    return avg_kernel
+end
+
+dp_averaging_kernel(tp::TimeParams) =
+    dp_averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
+dp_averaging_kernel(dp::DecompParams) =
+    dp_averaging_kernel(dp.tp.kernel_type, dp.tp.kernel_params, dp.tp.kernel_dim)
+
+function dp_averaging_kernel(
+    kernel_type::Symbol,
+    kernel_params::AbstractArray{<:Real},
+    kernel_dim::Integer,
+)
+    if kernel_type == :gaussian
+        avg_kernel = dp_gausskernel(kernel_dim, kernel_params)
+    elseif kernel_type == :gaussian_exponential
+        avg_kernel = dp_gauss_expo_kernel(kernel_dim, kernel_params)
+    else
+        avg_kernel = []
+        throw(ArgumentError("dt Kernel type $(kernel_type) not implemented"))
+    end
+    return avg_kernel
+end
+
+function GMWFrame(sp::ScaleParams)
+    (; wave_dim, analytic) = sp
+    params = wavelet_parameters(sp)
+    if isassigned(sp.frame)
+        frame = sp.frame[]
+    else
+        frame = GMWFrame(wave_dim, params; analytic)
+        sp.frame = Ref(frame)
+    end
+    return frame
+end
+
+GMWFrame(dp::DecompParams) = GMWFrame(ScaleParams(dp))
+
+function GMWFrame(
+    N::Integer,
+    params::AbstractArray{<:AbstractVector{<:Real}};
+    selfdual = true,
+    analytic = false,
+)
+    L = div(N, 2) + 1 # Analytical fft size
+
+    # Init frame 
+    frame = [GMW.gmw(0, p[1], 0, p[3], p[4], N, :peak) for p in params]
+    freq_peaks = map(p -> GMW.peak_n(p, 1), params)
+    # Build low-pass 
+    w = (0:(L-1)) / N
+    w0 = minimum(freq_peaks)
+    low_pass = exp.(-(3 * log(10) / 20) * (w / w0) .^ 2) # -3dB at w=w0
+    frame = [frame..., low_pass]
+    freq_peaks = vcat(freq_peaks, 0.0)
+
+    # Self-Dual normalisation
+    if selfdual
+        ψ_norm = sqrt.(sum(x -> abs2.(x), frame))
+        if analytic
+            if iseven(N)
+                ψ_norm[2:(L-1)] /= sqrt(2)
+            else
+                ψ_norm[2:L] /= sqrt(2)
+            end
+        end
+        frame = [g ./ ψ_norm for g in frame]
     end
 
-    return ((time_sampling, σ_t), kernel_params, KernelC)
+    # To time now
+    # First some padding
+    frame = [vcat(g, zeros(N - L)) for g in frame]
+    if !analytic
+        for g in frame
+            g[1] /= 2
+            g[L] /= iseven(N) ? 2 : 1
+        end
+        frame = [2 * real(ifft(g)) for g in frame]
+    else
+        frame = [ifft(g) for g in frame]
+    end
+    # time centering of the filters
+    frame = [circshift(g, default_phase_kernel(N)) for g in frame]
+
+    # time deviations
+    # filters are symmetrical in time so we compute the time deviation only on the right side 
+    t = LinRange(-1, 1, N) * div(N, 2)
+    sigmas = [sqrt(sum(abs2, t .* g) / sum(abs2, g)) for g in frame]
+    return GMWFrame(N, params, frame, freq_peaks, sigmas, selfdual, analytic)
+end
+
+function make_mem(C)
+    ckf = collect(Iterators.flatten(keys(C)))
+    ccount = map(k->(k,count(==(k),ckf)),unique(ckf))
+    filter!(x->x[2]>1,ccount)
+    mem = Dict{Symbol,Any}((k=>nothing for (k,v) in ccount))
+end
+
+in_mem(mem,k) = k in keys(mem) && !isnothing(mem[k])
+store!(mem,k,v) = k in keys(mem) && isnothing(mem[k]) ? mem[k] = v : nothing
+
+function cross_scalogram(
+    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
+    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
+    dp::DecompParams,
+    frame::Union{AbstractArray{<:AbstractArray{T}},GMWFrame},
+    avg_kernel::Union{AbstractVector{<:Real},AbstractVector{<:AbstractVector{<:Real}}},
+    K = 2,
+) where {T<:Union{Real,Complex}}
+
+    (; tp, sp) = dp
+    (; dt) = tp
+    (; analytic) = sp
+    pad_tp = tp.padding
+    pad_sp = sp.padding
+    allequal(length, values(L)) || throw(error("Wrong size"))
+    frame = frame isa GMWFrame ? frame.frame : frame
+    work_dim = length(first(values(L)))
+    time_sampling = 1:dt:work_dim
+    if avg_kernel isa Vector{Float64}
+        many_kernels = false
+    else
+        many_kernels = true
+        length(frame) == length(avg_kernel) ||
+            throw(error("Number of filters and averaging kernels are not equal"))
+    end
+    return_type = analytic ? ComplexF64 : Float64
+
+    WaveC = CConv(return_type, work_dim; padding=pad_sp)
+    KernelC = CConv(return_type, work_dim; padding = pad_tp)
+
+    out = Dict(c => Dict() for c in keys(C))
+    for C_p in Iterators.partition(C, K)
+        for (i, gmw) in enumerate(frame)
+            mem = make_mem(C_p)
+            avgk = many_kernels ? avg_kernel[i] : avg_kernel
+            load_kernel = true
+            for (c, _) in C_p
+                (n, m) = c
+                x = L[n]
+                y = L[m]
+                x_i = in_mem(mem,n) ? mem[n] : WaveC(x,gmw;load_kernel)
+                store!(mem,n,x_i)
+                y_i = in_mem(mem,m) ? mem[m] : WaveC(y,gmw;load_kernel)
+                store!(mem,m,y_i)
+                f = KernelC(x_i .* y_i, avgk; load_kernel)
+                f = f[time_sampling]
+                out[c][i] = f
+                load_kernel=false
+            end
+        end
+    end
+    # Output matrices
+    out_hcat = Dict()
+    for c in keys(C)
+        cs = [out[c][i] for i = 1:length(frame)]
+        out_hcat[C[c]] = stack(cs)
+    end
+    return out_hcat
+end
+
+cross_scalogram(
+    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
+    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
+    dp::DecompParams,
+) = cross_scalogram(L, C, dp, GMWFrame(dp), averaging_kernel(dp))
+
+_xy_dict(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}) =
+    (Dict(:x => x, :y => y), Dict((:x, :y) => :xy))
+
+cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...) =
+    cross_scalogram(_xy_dict(x, y)..., args...)[:xy]
+
+dt_cross_scalogram(
+    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
+    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
+    dp,
+) = cross_scalogram(L, C, dp, GMWFrame(dp), dt_averaging_kernel(dp))
+dt_cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...) =
+    dt_cross_scalogram(_xy_dict(x, y)..., args...)[:xy]
+
+dp_cross_scalogram(
+    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
+    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
+    dp,
+) = cross_scalogram(L, C, dp, GMWFrame(dp), dp_averaging_kernel(dp))
+dp_cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...) =
+    dp_cross_scalogram(_xy_dict(x, y)..., args...)[:xy]
+
+
+function cross_correlation_rey(
+    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
+    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
+    tp::TimeParams,
+)
+    (; dt, padding) = tp
+    allequal(length, L) || throw(error("Wrong size"))
+    work_dim = length(first(values(L)))
+    time_sampling = 1:dt:work_dim
+    KernelC = CConv(Float64, work_dim; padding)
+    avg_kernel = averaging_kernel(tp)
+    out = Dict()
+    load_kernel = true
+    mem = make_mem(C) 
+    for c in keys(C)
+        (n, m) = c
+        x = L[n]
+        y = L[m]
+        x_p = in_mem(mem,n) ? mem[n] : x - KernelC(x,avg_kernel;load_kernel)
+        store!(mem,n,x_p)
+        load_kernel = false
+        y_p = in_mem(mem,m) ? mem[m] : y - KernelC(y,avg_kernel;load_kernel)
+        store!(mem,m,y_p)
+        out[C[c]] = KernelC(x_p .* y_p, avg_kernel; load_kernel)[time_sampling]
+    end
+    return out
+end
+
+
+average(x::AbstractArray{<:Real}, tp::TimeParams, subsampling::Bool = true) =
+    average([x], tp, subsampling)[1]
+function average(
+    L::AbstractArray{<:AbstractArray{<:Real}},
+    tp::TimeParams,
+    subsampling::Bool = true,
+)
+    (; dt, padding) = tp
+    allequal(length, L) || throw(error("Wrong size"))
+    work_dim = length(L[1])
+    time_sampling = 1:dt:work_dim
+    KernelC = CConv(Float64, work_dim; padding)
+    avg_kernel = averaging_kernel(tp)
+    out = []
+    load_kernel = true
+    for x in L
+        x_avg = KernelC(x, avg_kernel; load_kernel)
+        if subsampling
+            x_avg = x_avg[time_sampling]
+        end
+        push!(out, x_avg)
+        if load_kernel
+            load_kernel = false
+        end
+    end
+    return out
+end
+
+dt_average(x::AbstractArray{<:Real}, tp::TimeParams, subsampling::Bool = true) =
+    dt_average([x], tp, subsampling)[1]
+function dt_average(
+    L::AbstractArray{<:AbstractArray{<:Real}},
+    tp::TimeParams,
+    subsampling::Bool = true,
+)
+    (; dt, padding) = tp
+    allequal(length, L) || throw(error("Wrong size"))
+    work_dim = length(L[1])
+    time_sampling = 1:dt:work_dim
+    KernelC = CConv(Float64, work_dim; padding)
+    avg_kernel = dt_averaging_kernel(tp)
+    out = []
+    load_kernel = true
+    for x in L
+        x_avg = KernelC(x, avg_kernel; load_kernel)
+        if subsampling
+            x_avg = x_avg[time_sampling]
+        end
+        push!(out, x_avg)
+        if load_kernel
+            load_kernel = false
+        end
+    end
+    return out
+end
+
+dp_average(x::AbstractArray{<:Real}, tp::TimeParams, subsampling::Bool = true) =
+    dp_average([x], tp, subsampling)[1]
+function dp_average(
+    L::AbstractArray{<:AbstractArray{<:Real}},
+    tp::TimeParams,
+    subsampling::Bool = true,
+)
+    (; dt, padding) = tp
+    allequal(length, L) || throw(error("Wrong size"))
+    work_dim = length(L[1])
+    time_sampling = 1:dt:work_dim
+    KernelC = CConv(Float64, work_dim; padding)
+    avg_kernel = dp_averaging_kernel(tp)
+    out = []
+    load_kernel = true
+    for x in L
+        x_avg = KernelC(x, avg_kernel; load_kernel)
+        if subsampling
+            x_avg = x_avg[time_sampling]
+        end
+        push!(out, x_avg)
+        if load_kernel
+            load_kernel = false
+        end
+    end
+    return out
+end
+
+# function scalogram_error_mask(work_dim::Int, gmw::GMWFrame; factor = 3, max_sigma = false)
+#     sigmas = gmw.sigmas
+#     mask = falses(work_dim, length(sigmas))
+#     max_sigma_val = ceil(Int, maximum(sigmas) * factor[1])
+#     for (i, s) in enumerate(sigmas)
+#         if max_sigma
+#             s = max_sigma_val
+#         else
+#             s = ceil(Int, s * factor[1])
+#         end
+#         mask[1:s, i] .= true
+#         mask[(end-s+1):end, i] .= true
+#     end
+#     return mask
+# end
+
+function error_mask(dp::DecompParams, work_dim::Int)
+    (; tp, sp) = dp
+    mask = vcat(1, falses(work_dim - 2), 1)
+    frame = GMWFrame(sp)
+    avg_kernel = averaging_kernel(tp)
+    out = cross_scalogram(mask, mask, dp, frame, avg_kernel)
+    mask = abs.(out) .> 1e-6
+    return mask
+end
+
+function error_mask(dp::DecompParams, mask::AbstractArray{Bool})
+    (; tp, sp) = dp
+    mask = copy(mask)
+    mask[1] = 1
+    mask[end] = 1
+    frame = GMWFrame(sp)
+    avg_kernel = averaging_kernel(tp)
+    out = cross_scalogram(mask, mask, dp, frame, avg_kernel)
+    mask = abs.(out) .> 1e-6
+    return mask
+end
+
+error_mask(tp::TimeParams) = error_mask(tp, tp.work_dim)
+function error_mask(tp::TimeParams, work_dim::Int)
+    mask = vcat(1, falses(work_dim - 2), 1)
+    mask = average(mask, tp) .> 1e-6
+    return mask
+end
+function error_mask(tp::TimeParams, mask::AbstractArray{Bool})
+    mask = copy(mask)
+    mask[1] = 1
+    mask[end] = 1
+    mask = average(mask, tp) .> 1e-6
+    return mask
 end

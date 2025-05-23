@@ -1,6 +1,7 @@
 using TurbulenceFlux
+using LinearAlgebra, FFTW, Statistics, Rotations
 using Test
 
 include("conv.jl")
-#include("diff.jl")
-#include("scat.jl")
+include("corrections.jl")
+include("flux.jl")
