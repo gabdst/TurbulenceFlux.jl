@@ -1,6 +1,49 @@
 using Random, StatsFuns, FFTW
 import GeneralizedMorseWavelets as GMW
 
+struct IIR
+    a::Vector{Float64}
+    b::Vector{Float64}
+    y::Vector{Float64}
+    function IIR(a, b)
+        y = zeros(Float64, length(a))
+        return new(a, b, y)
+    end
+end
+
+function (iir::IIR)(x)
+    y_new = iir.a' * (iir.y) + iir.b' * x
+    circshift!(iir.y, 1)
+    iir.y[1] = y_new
+    return y_new
+end
+
+function reset!(iir::IIR)
+    fill!(iir.y, 0)
+    return nothing
+end
+
+function applyfilter(iir::IIR, x::Vector{Float64})
+    p = length(iir.b)
+    n = length(x)
+    out = zeros(n)
+    for i = 1:n
+        v_x = view(x, max(1, i - p + 1):i)
+        if length(v_x) < p
+            v_x = vcat(zeros(p - length(v_x)), v_x)
+        end
+        out[i] = iir(v_x)
+    end
+    return out
+end
+
+function lowpass(fc, fs)
+    alpha = 2pi * (fc / fs) / (2pi * fc / fs + 1)
+    a = [1 - alpha]
+    b = [alpha]
+    return IIR(a, b)
+end
+
 _default_phase_kernel(kernel_dim) =
     iseven(kernel_dim) ? div(kernel_dim, 2) - 1 : div(kernel_dim, 2)
 _copy_real!(x::AbstractArray{Float64}, y::AbstractArray{ComplexF64}) = map!(real, x, y)
@@ -10,8 +53,8 @@ struct CConv{T<:Union{Float64,ComplexF64}} # 1D Convolution with constrained ker
     output_dim::Tuple{Integer,Integer,Integer}
     kernel_dim::Tuple{Integer,Integer}
     padding::Integer
-    kernel_init_params::Function # Function to initialize parameters
-    kernel_func::Function
+    kernel_init_params::Function # (Optional) Function to initialize parameters
+    kernel_func::Function # (Optional) Function that generates the kernel given the parameters
     crop_phase_output!::Function # Function that prepares the output in buff_out
 
     # Internals
@@ -33,8 +76,6 @@ function CConv(
     ::Type{T},
     input_dim::Tuple{Integer,Integer},
     kernel_dim::Tuple{Integer,Integer};
-    kernel_init_params = () -> nothing,
-    kernel_func = (C, x) -> identity(x),
     phase_output = nothing,
     padding = 0,
     crop_range = (1:input_dim[1]),
@@ -60,8 +101,6 @@ function CConv(
         output_dim,
         kernel_dim,
         padding,
-        kernel_init_params,
-        kernel_func,
         crop_phase_output!,
         buff_in,
         pfft_in,
@@ -70,14 +109,6 @@ function CConv(
         pifft_work,
         buff_out,
     )
-end
-
-function initialparameters(rng::AbstractRNG, C::CConv)
-    C.kernel_init_params(rng) # inverse mapping of parameters
-end
-
-function getkernel(C::CConv, params::AbstractArray)
-    C.kernel_func(C, params) # parameters to kernel
 end
 
 function _load_sig!(C::CConv, X::AbstractArray{<:Real})
@@ -101,15 +132,13 @@ function _conv!(C::CConv, X::AbstractArray, kernel::AbstractArray, flip_kernel::
     if flip_kernel
         conj!(C.buff_work)
     end
-    # TODO implement 2D fast fourier
     C.buff_work .*= C.buff_in
     C.pifft_work * C.buff_work # buff_work in place ifft
     C.crop_phase_output!(C.buff_work) # update buff_out
 end
 
-function (C::CConv)(X::AbstractArray{<:Real}, params, flip_kernel = false)
+function (C::CConv)(X::AbstractArray{<:Real}, kernel, flip_kernel = false)
     X = _load_sig!(C, X)
-    kernel = getkernel(C, params)
     _conv!(C, X, kernel, flip_kernel)
     return copy(C.buff_out)
 end
@@ -133,52 +162,126 @@ function _make_crop_func(crop_range, phase_output, output_dim, buff_out::Abstrac
     return crop_phase_func!
 end
 
-function init_wavelet_parameters(
-    rng = nothing;
-    b = 1,
-    g = 3,
-    J = 32,
-    Q = 2,
-    wmin = 0,
-    wmax = pi,
-)
+struct ScaleParams
+    b::Integer
+    g::Integer
+    J::Integer
+    Q::Integer
+    wmin::Float64
+    wmax::Float64
+    wave_dim::Integer
+end
+
+struct TimeParams
+    kernel_dim::Integer
+    kernel_type::Symbol
+    kernel_params::AbstractArray{<:Real}
+    dt::Integer
+end
+
+function wavelet_parameters(rng = nothing; b = 1, g = 3, J = 32, Q = 2, wmin = 0, wmax = pi)
     params = GMW.gmw_grid(b, g, J, Q, wmin, wmax, 0)
     return params
 end
-init_wavelet_parameters(b, g, J, Q, wmin, wmax) =
-    init_wavelet_parameters(; b, g, J, Q, wmin, wmax)
+wavelet_parameters(b, g, J, Q, wmin, wmax) = wavelet_parameters(; b, g, J, Q, wmin, wmax)
 
-function _wf_get_gmfs!(buff_work, params, L, N)
-    # Fill buff_work with zeros (does non-analytical part zero padding + time zero padding)
-    fill!(buff_work, 0.0)
+function gausskernel(kernel_dim, params, padding)
+    s = params[1]
+    u = length(params) == 2 ? params[2] : 0
+    t = LinRange(0, 1, kernel_dim)
+    g = exp.(-0.5 * ((t .- 0.5 .+ u) / s) .^ 2)
+    g = vcat(g, zeros(padding))
+    g = g / sum(g)
+    return g
+end
 
-    # Fill buff_work of analytical wavelets
-    for j in axes(params, 2)
-        a = params[1, j]
-        β = params[3, j]
-        γ = params[4, j]
-        b_v = view(buff_work, 1:L, j, 1)
-        gmw!(b_v, 0, a, 0, β, γ, N, :peak)
+function gauss_expo_kernel(kernel_dim, kernel_params)
+    sigma0, alpha, n = kernel_params
+    sigmas = exp.([log(sigma0) + i * log(alpha) for i = 0:(n-1)])
+    return [gausskernel(kernel_dim, sigma, 0) for sigma in sigmas]
+end
+
+function rectkernel(kernel_dim, kernel_params)
+    n = kernel_dim
+    m = kernel_params[1]
+    x = zeros(Float64, n)
+    x[1:m] .= 1
+    l = n - m
+    l = iseven(l) ? div(l, 2) : div(l, 2) + 1
+    circshift(x, l)
+end
+
+"""
+    averaging_kernel(work_dim;kernel_type,kernel_params,dt,kernel_dim,with_sigma=false)
+
+TODO
+Initiliaze an averaging convolutional kernel.
+
+It returns the range for sampling in time, the original parameter mapped in (-∞,+∞) and the kernel.
+
+# Arguments
+  - `input_dim::Union{Integer,Tuple{Integer,Integer}}`: Input dimension
+  - `kernel_dim::Integer`: Maximum time support for the averaging kernel
+  - `kernel_type::Symbol`: Type of kernel used for the averaging kernel
+  - `kernel_params::Vector`: Vector of parameters for the averaging kernel
+"""
+averaging_kernel(tp::TimeParams) =
+    averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
+function averaging_kernel(
+    kernel_type::Symbol,
+    kernel_params::AbstractArray{<:Real},
+    kernel_dim::Integer,
+)
+    if kernel_type == :gaussian
+        avg_kernel = gausskernel(kernel_dim, kernel_params, 0)
+    elseif kernel_type == :gaussian_exponential
+        avg_kernel = []
+    elseif kernel_type == :rect
+        avg_kernel = rectkernel(kernel_dim, kernel_params)
+    else
+        avg_kernel = []
+        throw(error("Kernel type $(kernel_type) not implemented"))
     end
-    return buff_work
+    return avg_kernel
 end
 
-function _wf_get_lp!(buff_work, params, L, N, K)
-    # Create the Low-Pass
-    b_v = view(buff_work, 1:L, K, 1)
+struct GMWFrame
+    wave_dim::Integer # N
+    gmw_params::AbstractArray{<:AbstractVector{<:Real}} # a,u,b,g, Px4
+    gmw_frame::AbstractArray{Vector{ComplexF64}} # (P+1)xN
+    freq_peaks::AbstractArray{Float64} # P+1
+    sigma_waves::Array{Float64} # P+1
+    selfdual::Bool
+    analytic::Bool
+end
+
+function GMWFrame(scale_params::ScaleParams)
+    (; b, g, J, Q, wmin, wmax, wave_dim) = scale_params
+    gmw_params = TurbulenceFlux.wavelet_parameters(b, g, J, Q, wmin, wmax)
+    return GMWFrame(wave_dim, gmw_params)
+end
+
+function GMWFrame(
+    N::Integer,
+    gmw_params::AbstractArray{<:AbstractVector{<:Real}},
+    selfdual = true,
+    analytic = false,
+)
+    L = div(N, 2) + 1 # Analytical fft size
+
+    # Init frame 
+    gmw_frame = [GMW.gmw(0, p[1], 0, p[3], p[4], N, :peak) for p in gmw_params]
+    freq_peaks = map(p -> GMW.peak_n(p, 1), gmw_params)
+    # Build low-pass 
     w = (0:(L-1)) / N
-    freq_peaks = mapslices(p -> peak_n(p, 1), params, dims = 1)
     w0 = minimum(freq_peaks)
-    ϕ = exp.(-(3 * log(10) / 20) * (w / w0) .^ 2) # -3dB at w=w0
-    b_v .= ϕ
-    return b_v
-end
+    low_pass = exp.(-(3 * log(10) / 20) * (w / w0) .^ 2) # -3dB at w=w0
+    gmw_frame = [gmw_frame..., low_pass]
+    freq_peaks = vcat(freq_peaks, 0.0)
 
-function _wf_make_selfdual!(buff_work, N, L, selfdual, analytic)
-    b_v = view(buff_work, 1:L, :, 1)
+    # Self-Dual normalisation
     if selfdual
-        # Normalization
-        ψ_norm = sqrt.(sum(abs2, b_v, dims = 2))
+        ψ_norm = sqrt.(sum(x -> abs2.(x), gmw_frame))
         if analytic
             if iseven(N)
                 ψ_norm[2:(L-1)] /= sqrt(2)
@@ -186,263 +289,87 @@ function _wf_make_selfdual!(buff_work, N, L, selfdual, analytic)
                 ψ_norm[2:L] /= sqrt(2)
             end
         end
-        b_v ./= ψ_norm
+        gmw_frame = [g ./ ψ_norm for g in gmw_frame]
     end
-    return b_v
-end
 
-function _wf_to_time!(buff_work, buff_work_v, pifft_wave, N, L, analytic)
-    # Real part of inverse discrete fourier transform of analytical signal: need half coeffs at k=0 and k=N/2 (only if N is even)
-    # We need to do this as we are not using irfft functions only plan_fft and plan_ifft, if we take the real part of the inverse discrete fourier transform we have to halve some coeffs
+    # To time now
+    # First some padding
+    gmw_frame = [vcat(g, zeros(N - L)) for g in gmw_frame]
     if !analytic
-        buff_work[1, :, 1] /= 2
-        buff_work_v[L, :, 1] /= iseven(N) ? 2 : 1
-    end
-
-    # All good: copy first slice along third dimension
-    for i in axes(buff_work, 3)[2:end]
-        buff_work[:, :, i] .= buff_work[:, :, 1]
-    end
-
-    pifft_wave * buff_work_v # In place inverse fourier transform
-    if !analytic
-        map!(x -> 2 * real(x), buff_work_v, buff_work_v) # Take 2*Real(ψ) but with properly halved coefficients at k=0 and k=N/2
-    end
-    for j in axes(buff_work, 2), k in axes(buff_work, 3)
-        b_v = view(buff_work, 1:N, j, k)
-        circshift!(b_v, _default_phase_kernel(N))
-    end
-    return buff_work
-end
-
-function _wavelet_frame(
-    C::CConv,
-    params::AbstractArray{<:Real},
-    kernel_dim::Tuple{Integer,Integer},
-    buff_work::AbstractArray{<:Complex},
-    buff_work_v::AbstractArray{<:Complex},
-    pifft_wave,
-    freq_corr::Union{Real,AbstractArray{<:Complex}} = 1,
-    selfdual = true,
-    analytic = false,
-)
-    K = size(params, 2) + 1  # Number of wavelets + 1 low pass
-    N = kernel_dim[1] # Wavelet size
-    L = div(N, 2) + 1 # Analytical fft size
-    (K - 1) == kernel_dim[2] || throw(error("Wrong size"))
-
-    _wf_get_gmfs!(buff_work, params, L, N)
-
-    _wf_get_lp!(buff_work, params, L, N, K)
-
-    _wf_make_selfdual!(buff_work, N, L, selfdual, analytic)
-
-    # Frequency Correction
-    b_v = view(buff_work, 1:L, :, 1)
-    b_v .*= freq_corr
-
-    _wf_to_time!(buff_work, buff_work_v, pifft_wave, N, L, analytic)
-
-    return buff_work
-end
-
-function WaveletConv(
-    input_dim,
-    kernel_dim;
-    padding = 0,
-    freq_corr = 1,
-    selfdual = true,
-    analytic = false,
-    conv_kwargs...,
-)
-    conv_dim = (input_dim[1] + padding, kernel_dim[2] + 1, input_dim[2])
-    buff_work = Array{ComplexF64}(undef, conv_dim)
-    buff_work_v = view(buff_work, 1:kernel_dim[1], :, :)
-    pifft_wave = plan_ifft!(buff_work_v, 1)
-    #kernel_func(C::CConv,wave_fft) = _wavefft_to_wavetime!(C,wave_fft,buff_work,buff_work_v,pifft_wave)
-    kernel_func(C::CConv, params) = _wavelet_frame(
-        C,
-        params,
-        kernel_dim,
-        buff_work,
-        buff_work_v,
-        pifft_wave,
-        freq_corr,
-        selfdual,
-        analytic,
-    )
-    return_type = analytic ? ComplexF64 : Float64
-    CConv(
-        return_type,
-        input_dim,
-        (kernel_dim[1], kernel_dim[2] + 1);
-        kernel_init_params = () -> nothing,
-        kernel_func = kernel_func,
-        buff_work = buff_work,
-        padding = padding,
-        conv_dim = conv_dim,
-        conv_kwargs...,
-    )
-end
-
-function _gausskernel(kernel_dim, params, padding)
-    σ = params[1]
-    u = length(params) == 2 ? params[2] : 0
-    t = LinRange(0, 1, kernel_dim)
-    g = exp.(-0.5 * ((t .- 0.5 .+ u) / σ) .^ 2)
-    g = vcat(g, zeros(padding))
-    g = g / sum(g)
-    return g
-end
-
-function GaussConv(input_dim, kernel_dim; padding = 0, conv_kwargs...)
-    conv_dim = (input_dim[1] + padding, 1, input_dim[2])
-    kernel_func(C::CConv, params) = reshape(
-        _gausskernel(kernel_dim[1], params, conv_dim[1] - kernel_dim[1]),
-        conv_dim[1],
-        1,
-        1,
-    )
-    CConv(
-        Float64,
-        input_dim,
-        kernel_dim;
-        kernel_init_params = () -> nothing,
-        kernel_func = kernel_func,
-        conv_dim = conv_dim,
-        padding = padding,
-        conv_kwargs...,
-    )
-end
-
-#function _rectkernel(C::CConv, params)
-#    dim = C.kernel_dim
-#    padding = params[1]
-#    zero_padding = zeros(padding)
-#    N = dim - padding * 2
-#    if N <= 0
-#        throw(
-#            error(
-#                "The dimension of the kernel must be higher than the total amount of padding, i.e. kernel_dim > 2*padding",
-#            ),
-#        )
-#    end
-#    kernel = vcat(zero_padding, ones(N), zero_padding, zeros(C.input_dim[1] - dim)) / N
-#    return kernel
-#end
-#_rectkernel_init_params(rng::AbstractRNG) = [0]
-#
-#function RectConv(input_dim, kernel_dim; conv_kwargs...)
-#    CConv(
-#        input_dim,
-#        kernel_dim;
-#        kernel_init_params = _rectkernel_init_params,
-#        kernel_func! = _rectkernel,
-#        conv_kwargs...,
-#    )
-#end
-
-"""
-    init_wave_conv_kernel(work_dim;β,γ,J,Q,wmin,wmax,wave_dim,fs,with_sigma=false)
-
-Initialize a wavelet convolutional kernel. With padding and same dimension as input.
-
-# Arguments
-  - `work_dim::Union{Integer,Tuple{Integer,Integer}}`: Input dimension
-  - `wave_dim::Integer`: maximum time support in time index of wavelets
-  - `β::Float64`: First shape parameter of Generalized Morse Wavelets
-  - `γ::Float64`: Second shape parameter
-  - `J::Integer`: Number of frequency octaves
-  - `Q::Integer`: Number of frequency inter-octaves
-  - `fmin::Float64`: Minimum frequency peak allowed
-  - `fmax::Float64`: Maximum and starting frequency peak allowed
-  - `fs`: Sampling frequency
-  - `with_sigma=false`: Return wavelet filters time deviation
-"""
-function init_wave_conv_kernel(
-    work_dim::Union{Integer,Tuple{Integer,Integer}};
-    β::Real,
-    γ::Real,
-    J::Integer,
-    Q::Integer,
-    fmin::Real,
-    fmax::Real,
-    wave_dim::Integer,
-    fs::Real,
-    with_sigma = false,
-)
-    wmin = fmin * 2pi / fs
-    wmax = fmax * 2pi / fs
-
-    wave_params =
-        init_wavelet_parameters(; β = β, γ = γ, J = J, Q = Q, wmin = wmin, wmax = wmax)
-    K = length(wave_params)
-    freq_peaks = mapslices(p -> peak_n(p, 1) * fs, wave_params, dims = 1)
-    freq_peaks = vcat(freq_peaks[:], 0.0)
-    work_dim = work_dim isa Integer ? (work_dim, 1) : work_dim
-    WaveC = WaveletConv(work_dim, (wave_dim, size(wave_params, 2)))
-    if with_sigma
-        σ_t = get_time_deviation(WaveC, wave_params, wave_dim)
-    else
-        σ_t = nothing
-    end
-    return ((freq_peaks, σ_t), wave_params, WaveC)
-end
-
-function get_time_deviation(WaveC, wave_params, wave_dim)
-    waves = WaveC.kernel_func(WaveC, wave_params)
-    phase = _default_phase_kernel(wave_dim)
-    r = range(start = phase + 1, length = (wave_dim - phase - 1))
-    t = (0:(length(r)-1))
-    waves_v = abs2.(view(waves, r, :, 1))
-    waves_v ./= sum(waves_v, dims = 1)
-    waves_v .*= abs2.(t)
-    σ_t = dropdims(sqrt.(sum(waves_v, dims = 1)), dims = 1)
-    return σ_t
-end
-
-function get_frequency_peaks(wave_params, fs = 1)
-    freq_peaks = mapslices(p -> peak_n(p, 1) * fs, wave_params, dims = 1)
-    freq_peaks = vcat(freq_peaks[:], 0.0)
-    return freq_peaks
-end
-
-"""
-    init_averaging_conv_kernel(work_dim;kernel_type,kernel_params,Δt,kernel_dim,with_sigma=false)
-
-Initiliaze an averaging convolutional kernel.
-
-It returns the range for sampling in time, the original parameter mapped in (-∞,+∞) and the kernel.
-
-# Arguments
-  - `work_dim::Union{Integer,Tuple{Integer,Integer}}`: Input dimension
-  - `kernel_dim::Integer`: Maximum time support for the averaging kernel
-  - `kernel_type::Symbol`: Type of kernel used for the averaging kernel
-  - `kernel_params::Vector`: Vector of parameters for the averaging kernel
-  - `Δt::Integer`: Time Sampling step of the output flux.
-  - `with_sigma=false`: Return time deviation
-"""
-function init_averaging_conv_kernel(
-    work_dim::Union{Integer,Tuple{Integer,Integer}};
-    kernel_type::Symbol,
-    kernel_params::AbstractArray{<:Real},
-    Δt::Integer,
-    kernel_dim::Integer,
-    with_sigma = false,
-)
-    time_sampling = 1:Δt:work_dim[1]
-    work_dim = work_dim isa Integer ? (work_dim, 1) : work_dim
-    if kernel_type == :gaussian
-        KernelC = GaussConv(work_dim, (kernel_dim, 1))
-
-        if with_sigma
-            σ_t = KernelC.kernel_dim[1] * kernel_params[1]
-        else
-            σ_t = nothing
+        for g in gmw_frame
+            g[1] /= 2
+            g[L] /= iseven(N) ? 2 : 1
         end
+        gmw_frame = [2 * real(ifft(g)) for g in gmw_frame]
     else
-        throw(error("Kernel type $(kernel_type) not implemented"))
+        gmw_frame = [ifft(g) for g in gmw_frame]
     end
+    # time centering of the filters
+    gmw_frame = [circshift(g, _default_phase_kernel(N)) for g in gmw_frame]
 
-    return ((time_sampling, σ_t), kernel_params, KernelC)
+    # time deviations
+    # filters are symmetrical in time so we compute the time deviation only on the right side 
+    phase = _default_phase_kernel(N)
+    r = range(start = phase + 1, length = (N - phase - 1))
+    t = (0:(length(r)-1))
+    sigma_waves = [sqrt(sum(abs2, t .* g[r]) / sum(abs2, g[r])) for g in gmw_frame]
+    return GMWFrame(N, gmw_params, gmw_frame, freq_peaks, sigma_waves, selfdual, analytic)
+end
+
+cross_scalogram(
+    x::AbstractArray{<:Real},
+    y::AbstractArray{<:Real},
+    deltat::Int64,
+    gmw_frame::GMWFrame,
+    averaging_kernel::Union{Vector{Float64},Vector{<:AbstractArray{Float64}}},
+    analytic = false,
+) = cross_scalogram([x, y], [(1, 2)], deltat, gmw_frame, averaging_kernel, analytic)
+
+function cross_scalogram(
+    L::Vector{<:AbstractArray{<:Real}},
+    C::Vector{Tuple{Int64,Int64}},
+    deltat::Int64,
+    gmw_frame::GMWFrame,
+    averaging_kernel::Union{Vector{Float64},Vector{<:AbstractArray{Float64}}},
+    analytic = false,
+)
+
+    allequal(length, L) || throw(error("Wrong size"))
+    gmw_frame = gmw_frame.gmw_frame
+    work_dim = length(L[1])
+    time_sampling = 1:deltat:work_dim
+    if averaging_kernel isa Vector{Float64}
+        many_kernels = false
+    else
+        many_kernels = true
+        length(gmw_frame) == length(averaging_kernel) ||
+            throw(error("Number of filters and averaging kernels are not equal"))
+    end
+    input_dim = (work_dim, 1)
+    wave_dim = (length(gmw_frame[1]), 1)
+    kernel_dim =
+        many_kernels ? (length(averaging_kernel[1]), 1) : (length(averaging_kernel), 1)
+    return_type = analytic ? ComplexF64 : Float64
+
+    WaveC = CConv(return_type, input_dim, wave_dim)
+    KernelC = CConv(return_type, input_dim, kernel_dim)
+
+    out = Dict(c => Dict() for c in C)
+    for (i, gmw) in enumerate(gmw_frame)
+        mem = Dict()
+        avg_kernel = many_kernels ? averaging_kernel[i] : averaging_kernel
+        for c in C
+            (n, m) = c
+            x = L[n]
+            y = L[m]
+            x_i = n in keys(mem) ? mem[n] : mem[n] = WaveC(x, gmw)
+            y_i = m in keys(mem) ? mem[m] : mem[m] = WaveC(y, gmw)
+            x_i = vec(x_i)
+            y_i = vec(y_i)
+            f = KernelC(x_i .* y_i, avg_kernel)
+            f = f[time_sampling]
+            out[c][i] = f
+        end
+    end
+    return out
 end

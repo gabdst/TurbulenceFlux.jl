@@ -17,16 +17,18 @@ time_sampling = 1:deltat:work_dim
 
 gmw_params = TurbulenceFlux.init_wavelet_parameters(b, g, J, Q, wmin, wmax)
 gmw_frame = TurbulenceFlux.GMWFrame(wave_dim, gmw_params)
-σ_waves = gmw_frame.σ_waves
-σ_min = minimum(σ_waves)
-many_averaging_kernel =
-    [TurbulenceFlux._gausskernel(kernel_dim, 10 * σ / kernel_dim, 0) for σ in σ_waves]
-averaging_kernel = TurbulenceFlux._gausskernel(kernel_dim, 10 * σ_min / kernel_dim, 0)
+sigma_waves = gmw_frame.sigma_waves
+sigma_min = minimum(sigma_waves)
+many_averaging_kernel = [
+    TurbulenceFlux.gausskernel(kernel_dim, 10 * sigma / kernel_dim, 0) for
+    sigma in sigma_waves
+]
+averaging_kernel = TurbulenceFlux.gausskernel(kernel_dim, 10 * sigma_min / kernel_dim, 0)
 
-out0 = TurbulenceFlux.cross_scattering(x, x, deltat, gmw_frame.gmw_frame, averaging_kernel)
-out1 = TurbulenceFlux.cross_scattering(x, y, deltat, gmw_frame, averaging_kernel)
+out0 = TurbulenceFlux.cross_scalogram(x, x, deltat, gmw_frame.gmw_frame, averaging_kernel)
+out1 = TurbulenceFlux.cross_scalogram(x, y, deltat, gmw_frame, averaging_kernel)
 
-out2 = TurbulenceFlux.cross_scattering(
+out2 = TurbulenceFlux.cross_scalogram(
     [x, y],
     [(1, 1), (1, 2)],
     deltat,

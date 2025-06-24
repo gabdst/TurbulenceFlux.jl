@@ -16,10 +16,10 @@ function GMWFrame(
 )
     L = div(N, 2) + 1 # Analytical fft size
 
-    # Init frame in frequency
+    # Init frame 
     gmw_frame = [GMW.gmw(0, p[1], 0, p[3], p[4], N, :peak) for p in gmw_params]
     freq_peaks = map(p -> GMW.peak_n(p, 1), gmw_params)
-    # Build low-pass  in frequency
+    # Build low-pass 
     w = (0:(L-1)) / N
     w0 = minimum(freq_peaks)
     low_pass = exp.(-(3 * log(10) / 20) * (w / w0) .^ 2) # -3dB at w=w0
@@ -143,19 +143,16 @@ function cross_scattering(
     out = Dict(c => Dict() for c in C)
     for (i, gmw) in enumerate(gmw_frame)
         mem = Dict()
+        avg_kernel = many_kernels ? averaging_kernel[i] : averaging_kernel
         for c in C
             (n, m) = c
             x = L[n]
             y = L[m]
             x_i = n in keys(mem) ? mem[n] : mem[n] = WaveC(x, gmw)
             y_i = m in keys(mem) ? mem[m] : mem[m] = WaveC(y, gmw)
-            x_i = reshape(x_i, length(x_i))
-            y_i = reshape(y_i, length(y_i))
-            if many_kernels
-                f = KernelC(x_i .* y_i, averaging_kernel[i])
-            else
-                f = KernelC(x_i .* y_i, averaging_kernel)
-            end
+            x_i = vec(x_i)
+            y_i = vec(y_i)
+            f = KernelC(x_i .* y_i, avg_kernel)
             f = f[time_sampling]
             out[c][i] = f
         end
