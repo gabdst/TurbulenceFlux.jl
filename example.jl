@@ -1,18 +1,22 @@
-# TurbulenceFlux.jl  [![DOI](https://zenodo.org/badge/733581341.svg)](https://doi.org/10.5281/zenodo.15310755)
+using JLD2
+using DataFrames
+using TurbulenceFlux
+using GLMakie
+using Statistics
 
-[![Project Status: WIP – Initial development is in progress, but there has not yet been a stable, usable release suitable for the public.](https://www.repostatus.org/badges/latest/wip.svg)](https://www.repostatus.org/#wip)
 
-TurbulenceFlux.jl is a Julia package designed for high-resolution turbulence analysis and flux estimation using flux tower measurements of wind speeds and concentrations. This package is currently in its alpha stage, meaning it is under active development and significant modifications are expected.
+# Some data available at https://drive.proton.me/urls/VM51CC7Y6G#q9ykofXnuqys
+data = jldopen("data_sample.jld2")
+dates = keys(data)
+d = first(dates)
+signals = data[d]["Signals"]
+u = signals.U
+v = signals.V
+w = signals.W
+P = signals.P * 1e3 # To Pa
+T = signals.T .+ 273.15 # To K
+C = signals.CO2 # umol/mol
 
-## Important Notice
-
-As an alpha release, this package may contain bugs, lack features, and undergo substantial changes in its API and functionality. We welcome feedback and contributions to help improve and stabilize the package.
-
-## Usage
-
-Below is a quick usage guide to get you started. For a practical example, please see `example.jl`, which applies the method to available data samples and generates visuals.
-
-```julia
 # Assuming u, v, w are the three wind speed components (m/s),
 # P (Pa) and T (K) are pressure and temperature signals,
 # C (umol/mol) is the CO2 concentration
@@ -73,9 +77,80 @@ eta = map(c -> to_eta(c[1], c[2]), CI)
 (masks, deltatau, itp) = turbu_extract_laplacian(t, eta, log10.(tauw), δ_Δτ = 1, δ_τ = 1e-3)
 
 # Scale integration of the flux given the turbulence mask
-FC = time_integrate_flux(decomp_FC, masks.turbulence) 
-```
+FC = time_integrate_flux(decomp_FC, masks.turbulence)
 
-## Contributing
+cmap_flux = Makie.Reverse(:bam)
+cmap_tau = Makie.Reverse(:roma)
+function plot_contour(
+    x,
+    y,
+    z;
+    g = nothing,
+    xlabel = "",
+    ylabel = "",
+    zlabel = "",
+    mask = nothing,
+    mask_alpha = 0.25,
+    vmin = -5 * std(z),
+    vmax = 5 * std(z),
+    length = 20,
+    levels = range(vmin, vmax, length = length),
+    colormap = cmap_tau,
+)
+    ax = Axis(g[1, 1]; xlabel, ylabel)
+    co = contourf!(ax, x, y, z; levels, colormap)
+    if !isnothing(mask)
+        contourf!(ax, x, y, mask, colormap = [(:black, mask_alpha), (:white, 0)])
+    end
+    Colorbar(g[1, 2], co, label = zlabel)
+    return g, ax
+end
 
-We encourage contributions from the community to help improve TurbulenceFlux.jl. If you have any suggestions, bug reports, or would like to contribute code, please feel free to open an issue or submit a pull request.
+function plot_contour_line(args...; kwargs...)
+    g, ax = plot_contour(args...; kwargs...)
+    ax_line = Axis(g[2, 1], ylabel = kwargs[:zlabel], xlabel = kwargs[:xlabel]) # Prepare line Axis below
+    return g, ax, ax_line
+end
+
+h(d) = d[:, 1:end-1]
+etaref = h(eta)[div(size(eta, 1), 2), :]
+tref = t[:, 1]
+fig = Figure(size = (1000, 800))
+g1 = GridLayout(fig[1, 1])
+g2 = GridLayout(fig[2, 1])
+g3 = GridLayout(fig[1:2, 2])
+xlabel = "Time [h]"
+ylabel = L"\eta"
+g1, ax1 = plot_contour(
+    tref,
+    etaref,
+    h(tauw);
+    mask = h(masks.turbulence),
+    g = g1,
+    xlabel,
+    ylabel,
+    zlabel = L"\tau_w\,\mathrm{[m^2\,s^{-2}]}",
+)
+g2, ax2 = plot_contour(
+    tref,
+    etaref,
+    h(deltatau);
+    g = g2,
+    xlabel,
+    ylabel,
+    zlabel = L"\Delta \tau_w\,\mathrm{[m^2\,s^{-2}]}",
+)
+g3, ax3, ax_line = plot_contour_line(
+    tref,
+    etaref,
+    h(decomp_FC);
+    mask = h(masks.turbulence),
+    g = g3,
+    xlabel,
+    ylabel,
+    zlabel = L"FC\,\mathrm{[umol\,m^{-2}\,s^{-1}]}",
+    colormap = cmap_flux,
+)
+lines!(ax_line, tref, FC)
+linkxaxes!(ax1, ax2, ax3, ax_line)
+
