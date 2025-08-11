@@ -1,7 +1,7 @@
 name = "TurbulenceFlux"
 uuid = "801b548d-990e-47f8-8ae3-484f64b6e2ab"
 authors = ["gabriel destouet <gabriel.destouet@protonmail.com>"]
-version = "0.2.0"
+version = "0.2.1"
 
 [deps]
 ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
