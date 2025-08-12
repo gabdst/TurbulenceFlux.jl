@@ -1,6 +1,11 @@
 module TurbulenceFlux
+using LinearAlgebra
+using Statistics
+using Rotations
+include("utils.jl")
 include("conv.jl")
 include("graph.jl")
+include("corrections.jl")
 include("flux.jl")
 include("diff.jl")
 

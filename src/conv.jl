@@ -1,49 +1,6 @@
 using Random, StatsFuns, FFTW
 import GeneralizedMorseWavelets as GMW
 
-struct IIR
-    a::Vector{Float64}
-    b::Vector{Float64}
-    y::Vector{Float64}
-    function IIR(a, b)
-        y = zeros(Float64, length(a))
-        return new(a, b, y)
-    end
-end
-
-function (iir::IIR)(x)
-    y_new = iir.a' * (iir.y) + iir.b' * x
-    circshift!(iir.y, 1)
-    iir.y[1] = y_new
-    return y_new
-end
-
-function reset!(iir::IIR)
-    fill!(iir.y, 0)
-    return nothing
-end
-
-function applyfilter(iir::IIR, x::Vector{Float64})
-    p = length(iir.b)
-    n = length(x)
-    out = zeros(n)
-    for i = 1:n
-        v_x = view(x, max(1, i - p + 1):i)
-        if length(v_x) < p
-            v_x = vcat(zeros(p - length(v_x)), v_x)
-        end
-        out[i] = iir(v_x)
-    end
-    return out
-end
-
-function lowpass(fc, fs)
-    alpha = 2pi * (fc / fs) / (2pi * fc / fs + 1)
-    a = [1 - alpha]
-    b = [alpha]
-    return IIR(a, b)
-end
-
 _default_phase_kernel(kernel_dim) =
     iseven(kernel_dim) ? div(kernel_dim, 2) - 1 : div(kernel_dim, 2)
 _copy_real!(x::AbstractArray{Float64}, y::AbstractArray{ComplexF64}) = map!(real, x, y)

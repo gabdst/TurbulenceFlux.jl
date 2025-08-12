@@ -502,35 +502,7 @@ function flux_estimation(
     return results
 end
 
-function optim_timelag(w, s, fc, fs, lag_max)
-    #TODO: implement it with an iir filter
-    length(w) == length(s) || throw(error("Signals must be of the same size."))
-    N = length(w)
 
-    lp = lowpass(fc, fs)
-    w_l = applyfilter(lp, w)
-    w_s = applyfilter(lp, s)
-    w_h = w - w_l
-
-    w_h
-
-    L = div(N, 2) + 1 # Analytical fft size
-    w = (0:(L-1)) / N
-    w0 = freq_cut
-    low_pass = exp.(-(3 * log(10) / 20) * (w / w0) .^ 2) # -3dB at w=w0
-    gmw_frame = [gmw_frame..., low_pass]
-    freq_peaks = vcat(freq_peaks, 0.0)
-
-    τ = 0:(lag_max-1)
-    τ_arr = vcat(reverse(-τ .- 1), τ)
-
-    out = irfft(sum(rfft(w_ξ, 1) .* conj(rfft(θ_ξ, 1)), dims = 2)[:], work_dim)
-
-
-
-    out = vcat(out[end-length(τ)+1:end], out[1:length(τ)])
-    return (τ_arr, out)
-end
 
 ## UTILS, TODO: put in utils.jl
 
