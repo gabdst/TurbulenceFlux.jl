@@ -1,3 +1,46 @@
+diff_XY(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, i::Int, j::Int) =
+    i == j ? NaN : (y[i] - y[j]) / (x[i] - x[j])
+
+"""
+    median_regression(x)
+
+Repeated median regression.
+"""
+function median_regression(s)
+    x = findall(!isnan, s)
+    n = length(x)
+    s = s[x]
+    a = Matrix{Float64}(undef, (n, n))
+    beta_vec = Vector{Float64}(undef, n)
+    for i = 1:n, j = i:n
+        a[i, j] = diff_XY(x, s, i, j)
+    end
+    a = Symmetric(a) # upper triangular view
+    for i = 1:n
+        beta_vec[i] = median(filter(!isnan, view(a, :, i)))
+    end
+    beta_rm = median(beta_vec)
+    mu_rm = median(s .- x * beta_rm)
+    return mu_rm, beta_rm
+end
+
+"""
+    MAD(x)
+
+Median Absolute Deviation of `x`.
+"""
+function mad(x) end
+
+
+"""
+    despiking(x)
+
+Despiking of signal `x`. Returns a filtered signal along with the mask locating the spikes.
+"""
+function despiking(x) end
+
+
+
 """
     optim_timelag(x, y, fc, fs)
 
