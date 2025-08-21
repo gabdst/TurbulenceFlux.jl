@@ -12,18 +12,57 @@ function running_func(x::AbstractArray{<:Real}, n::Integer, f; step = 1)
     return out
 end
 
-skipnan(x) = filter(!isnan, x)
-skipnan(f::Function) = skipvalues(skipnan, f)
-skipnanneg(x) = filter(x -> !isnan(x) && x > 0, x)
-skipnanneg(f::Function) = skipvalues(skipnanneg, f)
-function skipvalues(skiper::Function, f::Function)
-    function g(x)
-        x = skiper(x)
-        if isempty(x)
-            return NaN
-        else
-            return f(x)
-        end
+import Base:
+    parent,
+    iterate,
+    eltype,
+    keys,
+    eachindex,
+    getindex,
+    show,
+    @propagate_inbounds,
+    parent,
+    IndexStyle,
+    IteratorSize,
+    IteratorEltype,
+    SizeUnknown
+
+# Sensors Errors are replaced with NaN values, they are skipped when applying statistics.
+# Directly adapted from Statistics.skipmissing
+skipnan(itr) = SkipNan(itr)
+
+struct SkipNan{T}
+    x::T
+end
+IteratorSize(::Type{<:SkipNan}) = SizeUnknown()
+IteratorEltype(::Type{SkipNan{T}}) where {T} = IteratorEltype(T)
+eltype(::Type{SkipNan{T}}) where {T} = eltype(T)
+parent(itr::SkipNan) = itr.x
+
+function iterate(itr::SkipNan, state...)
+    y = iterate(itr.x, state...)
+    y === nothing && return nothing
+    item, state = y
+    while isnan(item)
+        y = iterate(itr.x, state)
+        y === nothing && return nothing
+        item, state = y
     end
-    return g
+    item, state
+end
+
+IndexStyle(::Type{<:SkipNan{T}}) where {T} = IndexStyle(T)
+eachindex(itr::SkipNan) =
+    Iterators.filter(i -> !isnan(@inbounds(itr.x[i])), eachindex(itr.x))
+keys(itr::SkipNan) = Iterators.filter(i -> !isnan(@inbounds(itr.x[i])), keys(itr.x))
+@propagate_inbounds function getindex(itr::SkipNan, I...)
+    v = itr.x[I...]
+    isnan(v) && throw(error(LazyString("the value at index ", I, " is NaN")))
+    v
+end
+
+function show(io::IO, s::SkipNan)
+    print(io, "skipfunc(")
+    show(io, s.x)
+    print(io, ')')
 end
