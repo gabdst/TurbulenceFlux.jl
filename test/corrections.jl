@@ -2,8 +2,8 @@ using Test
 using LinearAlgebra
 using Statistics
 using Rotations
-import TurbulenceFlux: optim_timelag, planar_fit, ErrorRotationAmbiguous
 
+import TurbulenceFlux: optim_timelag
 @testset "Timelag Optimization" begin
     N = 1024
     fs = 1
@@ -32,6 +32,8 @@ import TurbulenceFlux: optim_timelag, planar_fit, ErrorRotationAmbiguous
     end
 end
 
+
+import TurbulenceFlux: planar_fit, ErrorRotationAmbiguous
 @testset "Planar Fit" begin
     rand_angles() = (rand(3) .- 0.5) * pi / 2
     function make_rotation(N, pitch, roll, yaw, sigma)
@@ -89,3 +91,60 @@ end
         @test_throws ArgumentError planar_fit(zeros(10, 3), 0.9)
     end
 end
+
+using Test
+import TurbulenceFlux: RepeatedMedianRegressor, flag_spikes, getparams
+@testset "Despiking" begin
+    n = 1000
+    function make_trend(n, beta = 2, mu = -1, sigma = 1)
+        t_i(i) = 2 * (i - 1) / (n - 1) - 1
+        x = beta * t_i.(1:n) .+ mu
+        e = sigma * randn(n)
+        x = x + e
+        params = (; mu, beta, sigma)
+        return x, params
+    end
+    add_spikes!(x, per = 0.1) = x[rand(1:length(x), floor(Int, per * length(x)))] .= -9999
+    add_nan!(x, per = 0.1) = x[rand(1:length(x), floor(Int, per * length(x)))] .= NaN
+    @testset "RepeatedMedianRegressor" begin
+        function check_params(params, params_rm, rtol = 0.15)
+            @test isapprox(params.mu, params_rm.mu; rtol)
+            @test isapprox(params.beta, params_rm.beta; rtol)
+            @test isapprox(params.sigma, params_rm.sigma; rtol)
+        end
+        # Recover the correct parameters of data with trend and noise
+        rmr = RepeatedMedianRegressor(n)
+        y, params = make_trend(n)
+        mu, params_rm = rmr(y)
+        check_params(params, params_rm)
+        rmr(randn(length(y)))
+        check_params(params_rm, rmr(y)[2], 0) # the rmr is not dependent on the data it has processed before, it should give precisely the same results
+
+        # Test spikes corruption
+        y, params = make_trend(n)
+        add_spikes!(y)
+        mu, params_rm_c = rmr(y)
+        check_params(params, params_rm_c, 0.3)
+
+        # Test nan corruption
+        y, params = make_trend(n)
+        add_nan!(y)
+        mu, params_rm_c = rmr(y)
+        check_params(params, params_rm_c, 0.3)
+        # TODO: test breaking point
+    end
+    @testset "Flag Spikes" begin
+        # Overall mode
+        n = 1000
+        y, params = make_trend(n)
+        add_spikes!(y)
+        mask = flag_spikes(y, length(y))
+        @test all(mask .== (y .== -9999))
+
+        # Block mode
+        mask = flag_spikes(y, 100)
+        @test all(mask .== (y .== -9999))
+    end
+end
+
+

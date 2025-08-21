@@ -1,44 +1,76 @@
-diff_XY(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, i::Int, j::Int) =
-    i == j ? NaN : (y[i] - y[j]) / (x[i] - x[j])
-
-"""
-    median_regression(x)
-
-Repeated median regression.
-"""
-function median_regression(s)
-    x = findall(!isnan, s)
-    n = length(x)
-    s = s[x]
-    a = Matrix{Float64}(undef, (n, n))
-    beta_vec = Vector{Float64}(undef, n)
-    for i = 1:n, j = i:n
-        a[i, j] = diff_XY(x, s, i, j)
+struct RepeatedMedianRegressor
+    a::Matrix{Float64} # Slopes
+    b::Vector{Float64} # Median of slopes
+    c::Vector{Float64} # Centered signal
+    m::Vector{Float64} # Trend
+    s::Vector{Float64} # absolute deviations
+    params::Vector{Float64} # params found
+    d::Float64 # Morrection constant for absolute deviation
+    n::Int64 # Size of the block
+    function RepeatedMedianRegressor(n::Int64, d::Float64 = 2.2219)
+        a = zeros(n, n)
+        b = zeros(n)
+        s = zeros(div(n * (n - 1), 2))
+        c = zeros(n)
+        params = zeros(3)
+        m = zeros(n)
+        return new(a, b, c, m, s, params, d, n)
     end
-    a = Symmetric(a) # upper triangular view
-    for i = 1:n
-        beta_vec[i] = median(filter(!isnan, view(a, :, i)))
+end
+
+getparams(rmr::RepeatedMedianRegressor) =
+    (; mu = rmr.params[1], beta = rmr.params[2], sigma = rmr.params[3])
+
+function (rmr::RepeatedMedianRegressor)(y::AbstractArray{<:Real})
+    n = rmr.n
+    # Some computations could be avoided, however this is apparently better for the compiler
+    @turbo for j in axes(rmr.a, 2)
+        for i in axes(rmr.a, 1)
+            t_i = 2 * (i - 1) / (n - 1) - 1
+            t_j = 2 * (j - 1) / (n - 1) - 1
+            rmr.a[i, j] = (y[i] - y[j]) / (t_i - t_j)
+        end
     end
-    beta_rm = median(beta_vec)
-    mu_rm = median(s .- x * beta_rm)
-    return mu_rm, beta_rm
+    rmr.b .= vec(nanmedian!(rmr.a, dims = 1))
+    beta_rm = nanmedian!(rmr.b)
+    @turbo for i in axes(y, 1)
+        t_i = 2 * (i - 1) / (n - 1) - 1
+        rmr.c[i] = y[i] - t_i * beta_rm
+    end
+    # Linear to Upper Triangular matrix (no diagonal, thus (n*(n-1)/2) points)
+    @turbo for k = 1:length(rmr.s)
+        i = n - 1 - floor(Int, sqrt(-8 * k + 4 * n * (n - 1) + 1) / 2 - 0.5)
+        j = k + i + ((n - i + 1) * (n - i) - n * (n - 1)) ÷ 2
+        rmr.s[k] = abs(rmr.c[i] - rmr.c[j])
+    end
+    mu_rm = nanmedian!(rmr.c) # instead of nanmedian! which modifies the ordering of c, so that we can later check rmr.c to get the centered signal
+    sigma_rm = rmr.d * nanquantile!(rmr.s, 1 / 4)
+    @turbo for i = 1:n
+        t_i = 2 * (i - 1) / (n - 1) - 1
+        rmr.m[i] = mu_rm + t_i * beta_rm
+    end
+    rmr.params[1] = mu_rm
+    rmr.params[2] = beta_rm
+    rmr.params[3] = sigma_rm
+    return rmr.m, getparams(rmr)
 end
 
 """
-    MAD(x)
-
-Median Absolute Deviation of `x`.
-"""
-function mad(x) end
-
-
-"""
-    despiking(x)
+    flag_spikes(x)
 
 Despiking of signal `x`. Returns a filtered signal along with the mask locating the spikes.
 """
-function despiking(x) end
-
+function flag_spikes(x::AbstractArray{<:Real}, n::Int64, f = 5)
+    m = falses(length(x))
+    rmr = RepeatedMedianRegressor(n)
+    itr_x = Iterators.partition(x, n)
+    itr_m = Iterators.partition(m, n)
+    for (xv, mv) in zip(itr_x, itr_m)
+        mu, params = rmr(xv)
+        mv .= abs.(xv .- mu) .> params.sigma * f
+    end
+    return m
+end
 
 
 """
