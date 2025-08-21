@@ -1,32 +1,17 @@
-using Statistics
-using Unitful: Time
-using StatsBase
-using PhysicalConstants
-using Unitful
-import Loess
-
-const LAMBDA = 40660 / 1000 # "J.mmol^-1" latent heat of evaporation of water
-const C_p = 29.07 # Molar Heat Capacity at constant pressure J.mol^-1.K^-1
-const R = ustrip(PhysicalConstants.CODATA2018.R)
-
 "Convert vector `F` to flux of type `fluxtype` given the density `density`"
 function tofluxunits(F, density, fluxtype)
     # Using naming convention of FLUXNET
     if fluxtype == :H
         F = F .* density * C_p
-        units = u"J/m^2/s"
     elseif fluxtype == :LE
         F = F .* density * LAMBDA
-        units = u"J/m^2/s"
     elseif fluxtype == :FC
         F = F .* density
-        units = u"μmol" / u"m^2" / u"s"
     elseif fluxtype == :TAUW # No convention here calling it TAUW instead of TAU
-        units = u"m^2" / u"s^2"
     else
         throw(error("wrong flux type"))
     end
-    return (F, units)
+    return F
 end
 
 function map_idx(CI, mapping)

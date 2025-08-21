@@ -2,6 +2,16 @@ module TurbulenceFlux
 using LinearAlgebra
 using Statistics
 using Rotations
+using LoopVectorization
+using NaNStatistics
+using Statistics
+using PhysicalConstants, Unitful
+import Loess
+
+const LAMBDA = 40660 / 1000 # "J.mmol^-1" latent heat of evaporation of water
+const C_p = 29.07 # Molar Heat Capacity at constant pressure J.mol^-1.K^-1
+const R = ustrip(PhysicalConstants.CODATA2018.R)
+
 include("utils.jl")
 include("conv.jl")
 include("graph.jl")
