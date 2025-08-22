@@ -7,7 +7,10 @@ using NaNStatistics
 using Statistics
 using PhysicalConstants, Unitful
 using DataInterpolations
+using Random, StatsFuns, FFTW
+import GeneralizedMorseWavelets as GMW
 import Loess
+
 
 const LAMBDA = 40660 / 1000 # "J.mmol^-1" latent heat of evaporation of water
 const C_p = 29.07 # Molar Heat Capacity at constant pressure J.mol^-1.K^-1

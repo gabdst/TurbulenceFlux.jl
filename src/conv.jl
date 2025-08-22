@@ -1,11 +1,13 @@
-using Random, StatsFuns, FFTW
-import GeneralizedMorseWavelets as GMW
-
 _default_phase_kernel(kernel_dim) =
     iseven(kernel_dim) ? div(kernel_dim, 2) - 1 : div(kernel_dim, 2)
 _copy_real!(x::AbstractArray{Float64}, y::AbstractArray{ComplexF64}) = map!(real, x, y)
 
-struct CConv{T<:Union{Float64,ComplexF64}} # 1D Convolution with constrained kernel
+"""
+    CConv{T<:Union{Float64,ComplexF64}}
+
+Struct for FFT-based convolutions. See
+"""
+struct CConv{T<:Union{Float64,ComplexF64}}
     input_dim::Tuple{Integer,Integer}
     output_dim::Tuple{Integer,Integer,Integer}
     kernel_dim::Tuple{Integer,Integer}
@@ -120,20 +122,20 @@ function _make_crop_func(crop_range, phase_output, output_dim, buff_out::Abstrac
 end
 
 struct ScaleParams
-    b::Integer
-    g::Integer
-    J::Integer
-    Q::Integer
+    b::Float64
+    g::Float64
+    J::Int64
+    Q::Int64
     wmin::Float64
     wmax::Float64
-    wave_dim::Integer
+    wave_dim::Int64
 end
 
 struct TimeParams
-    kernel_dim::Integer
+    kernel_dim::Int64
     kernel_type::Symbol
     kernel_params::AbstractArray{<:Real}
-    dt::Integer
+    dt::Int64
 end
 
 function wavelet_parameters(rng = nothing; b = 1, g = 3, J = 32, Q = 2, wmin = 0, wmax = pi)
@@ -191,8 +193,6 @@ function averaging_kernel(
 )
     if kernel_type == :gaussian
         avg_kernel = gausskernel(kernel_dim, kernel_params, 0)
-    elseif kernel_type == :gaussian_exponential
-        avg_kernel = []
     elseif kernel_type == :rect
         avg_kernel = rectkernel(kernel_dim, kernel_params)
     else
