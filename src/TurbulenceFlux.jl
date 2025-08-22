@@ -6,6 +6,7 @@ using LoopVectorization
 using NaNStatistics
 using Statistics
 using PhysicalConstants, Unitful
+using DataInterpolations
 import Loess
 
 const LAMBDA = 40660 / 1000 # "J.mmol^-1" latent heat of evaporation of water

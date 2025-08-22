@@ -93,9 +93,9 @@ import TurbulenceFlux: planar_fit, ErrorRotationAmbiguous
 end
 
 using Test
-import TurbulenceFlux: RepeatedMedianRegressor, flag_spikes, getparams
-@testset "Despiking" begin
-    n = 1000
+import TurbulenceFlux:
+    RepeatedMedianRegressor, flag_spikes, getparams, flag_nan, interpolate_errors!
+@testset verbose = true "Despiking" begin
     function make_trend(n, beta = 2, mu = -1, sigma = 1)
         t_i(i) = 2 * (i - 1) / (n - 1) - 1
         x = beta * t_i.(1:n) .+ mu
@@ -112,6 +112,7 @@ import TurbulenceFlux: RepeatedMedianRegressor, flag_spikes, getparams
             @test isapprox(params.beta, params_rm.beta; rtol)
             @test isapprox(params.sigma, params_rm.sigma; rtol)
         end
+        n = 1000
         # Recover the correct parameters of data with trend and noise
         rmr = RepeatedMedianRegressor(n)
         y, params = make_trend(n)
@@ -131,7 +132,7 @@ import TurbulenceFlux: RepeatedMedianRegressor, flag_spikes, getparams
         add_nan!(y)
         mu, params_rm_c = rmr(y)
         check_params(params, params_rm_c, 0.3)
-        # TODO: test breaking point
+        # TODO: test 50% breaking point
     end
     @testset "Flag Spikes" begin
         # Overall mode
@@ -145,6 +146,35 @@ import TurbulenceFlux: RepeatedMedianRegressor, flag_spikes, getparams
         mask = flag_spikes(y, 100)
         @test all(mask .== (y .== -9999))
     end
+    @testset "Error Interpolation" begin
+        n = 10000
+        L = 20 * 10 #10s at 20hz
+        beta = 2
+        mu = 1
+        sigma = 0.0 # without noise and with linear interpolation we should get the same trend
+        y, params = make_trend(n, beta, mu, sigma)
+        y0 = copy(y)
+        add_spikes!(y)
+        add_nan!(y)
+        # also add errors on the borders
+        y[1] = -9999
+        y[2] = NaN
+        y[end-1] = -9999
+        y[end] = NaN
+        mask = flag_spikes(y, L) .|| flag_nan(y)
+        y_itp = copy(y)
+        interpolate_errors!(y_itp, mask)
+        @test isapprox(y0, y_itp)
+        # With noise, the error should be below sigma
+        sigma = 10
+        y, params = make_trend(n, beta, mu, sigma)
+        y0 = copy(y)
+        add_spikes!(y)
+        add_nan!(y)
+        # also add errors on the borders
+        mask = flag_spikes(y, L) .|| flag_nan(y)
+        y_itp = copy(y)
+        interpolate_errors!(y_itp, mask)
+        @test isapprox(y0, y_itp; rtol = 0, atol = sigma * sqrt(n - 1))
+    end
 end
-
-
