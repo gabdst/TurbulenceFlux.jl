@@ -1,25 +1,44 @@
 using Test
-import TurbulenceFlux:
-    init_wave_conv_kernel,
-    init_averaging_conv_kernel,
-    init_wavelet_parameters,
-    _default_phase_kernel,
-    WaveletConv,
-    GaussConv,
-    get_time_deviation
 using FFTW, LinearAlgebra
-
-work_dim = 1024
-wave_dim = work_dim
-kernel_dim = work_dim
-β = 2
-γ = 3
-J = floor(Int, log2(wave_dim))
-Q = 1
-wmin = 2pi / wave_dim
-wmax = pi
-Δt = 4
-time_sampling = 1:Δt:work_dim
+import TurbulenceFlux: CConv, _default_phase_kernel
+@testset "FFT-based Convolutional Kernel" begin
+    work_dim = 16
+    kernel_dim = work_dim
+    x = vcat(1, zeros(work_dim - 1))
+    kernel = randn(work_dim)
+    # Without padding
+    # Without phase
+    cconv = CConv(Float64, work_dim, kernel_dim; phase = 0)
+    y = cconv(x, kernel)
+    @test isapprox(y, kernel)
+    # With phase compensation
+    @testset "Phase compensation: phase=$phase " for phase in [-3, -2, 0, 2, 3]
+        cconv = CConv(Float64, work_dim, kernel_dim; phase)
+        y = cconv(x, circshift(kernel, phase))
+        @test isapprox(y, kernel)
+    end
+    # With padding it is more tricky to check phase compensation
+    # Without phase compensation
+    work_dim = 19
+    kernel_dim = 5
+    x = vcat(1, zeros(work_dim - 2), 0)
+    kernel = vcat(ones(kernel_dim), zeros(work_dim - kernel_dim))
+    padding = nextpow(2, work_dim) - work_dim
+    phase = 0
+    cconv = CConv(Float64, work_dim, kernel_dim; padding, phase)
+    y = cconv(x, kernel)
+    @test isapprox(y, kernel)
+    # With phase compensation and padding
+    @testset "Phase compensation and padding" for kernel_dim in [4, 5], work_dim in [19, 18]
+        x = vcat(1, zeros(work_dim - 2), 0)
+        kernel = vcat(ones(kernel_dim), zeros(work_dim - kernel_dim))
+        phase = _default_phase_kernel(kernel_dim)
+        cconv = CConv(Float64, work_dim, kernel_dim; padding)
+        y = cconv(x, kernel)
+        @test isapprox(y[1:(kernel_dim-phase)], kernel[1:(kernel_dim-phase)])
+        @test all(isapprox.(y[(kernel_dim-phase+1):end], 0, atol = 1e-6))
+    end
+end
 
 # Checking convolution kernels are working properly
 ## Self-dual property of the Wavelet Convolution Kernel
