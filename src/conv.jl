@@ -12,9 +12,9 @@ struct CConv{T<:Union{Float64,ComplexF64}}
     phase::Int64
     buff_in::Vector{ComplexF64}
     pfft_in::AbstractFFTs.Plan{ComplexF64}
-    buff_work::Vector{ComplexF64}
-    pfft_work::AbstractFFTs.Plan{ComplexF64}
-    pifft_work::AbstractFFTs.Plan{ComplexF64}
+    buff_ker::Vector{ComplexF64}
+    pfft_ker::AbstractFFTs.Plan{ComplexF64}
+    pifft_in::AbstractFFTs.Plan{ComplexF64}
     buff_out::Vector{T}
 end
 
@@ -30,9 +30,9 @@ function CConv(
     # Setting up internals in keywords 
     buff_in = Vector{ComplexF64}(undef, conv_dim)
     pfft_in = plan_fft!(buff_in)
-    buff_work = Vector{ComplexF64}(undef, conv_dim)
-    pfft_work = plan_fft!(buff_work)
-    pifft_work = plan_ifft!(buff_work)
+    buff_ker = Vector{ComplexF64}(undef, conv_dim)
+    pfft_ker = plan_fft!(buff_ker)
+    pifft_in = plan_ifft!(buff_in)
     output_dim = crop_range[2] - crop_range[1] + 1
     buff_out = Array{T}(undef, output_dim)
     return CConv{T}(
@@ -44,9 +44,9 @@ function CConv(
         phase,
         buff_in,
         pfft_in,
-        buff_work,
-        pfft_work,
-        pifft_work,
+        buff_ker,
+        pfft_ker,
+        pifft_in,
         buff_out,
     )
 end
@@ -60,29 +60,29 @@ function _load_sig!(C::CConv, X::AbstractVector{<:Real})
 end
 
 function _load_kernel!(C::CConv, kernel::AbstractVector{<:Real}, flip_kernel)
-    fill!(C.buff_work, 0.0) # Prepare zero padding
-    copy!(view(C.buff_work, axes(kernel, 1)), kernel)
+    fill!(C.buff_ker, 0.0) # Prepare zero padding
+    copy!(view(C.buff_ker, axes(kernel, 1)), kernel)
     if C.phase != 0 # Correct Phase
-        circshift!(C.buff_work, -C.phase)
+        circshift!(C.buff_ker, -C.phase)
     end
-    # Kernel Loaded in buff_work
-    C.pfft_work * C.buff_work # buff_work in place fft of kernel
+    # Kernel Loaded in buff_ker
+    C.pfft_ker * C.buff_ker # buff_ker in place fft of kernel
     if flip_kernel
-        conj!(C.buff_work)
+        conj!(C.buff_ker)
     end
-    return C.buff_work
+    return C.buff_ker
 end
 
 function _conv!(C::CConv)
-    # In place multiplication in buff_work
-    C.buff_work .*= C.buff_in
-    C.pifft_work * C.buff_work # buff_work in place ifft
+    # In place multiplication in buff_in
+    C.buff_in .*= C.buff_ker
+    C.pifft_in * C.buff_in# buff_in place ifft
     _crop_out!(C) # Crop in buff_out!
 end
 
 function _crop_out!(C::CConv)
     # Crop then correct the phase and not the other way
-    Y_v = view(C.buff_work, C.crop_range[1]:C.crop_range[2])
+    Y_v = view(C.buff_in, C.crop_range[1]:C.crop_range[2])
     if eltype(C.buff_out) <: Real
         _copy_real!(C.buff_out, Y_v)
     else
@@ -93,11 +93,14 @@ end
 
 function (C::CConv)(
     X::AbstractArray{<:Real},
-    kernel::AbstractVector{<:Union{Real,Complex}},
+    kernel::AbstractVector{<:Union{Real,Complex}};
     flip_kernel = false,
+    load_kernel = true,
 )
     _load_sig!(C, X)
-    _load_kernel!(C, kernel, flip_kernel)
+    if load_kernel
+        _load_kernel!(C, kernel, flip_kernel)
+    end
     _conv!(C)
     return copy(C.buff_out)
 end
@@ -116,7 +119,6 @@ struct TimeParams
     kernel_dim::Int64
     kernel_type::Symbol
     kernel_params::AbstractArray{<:Real}
-    dt::Int64
 end
 
 function wavelet_parameters(; b, g, J, Q, wmin, wmax)
@@ -127,32 +129,27 @@ function wavelet_parameters(b, g, J, Q, wmin, wmax)
     return GMW.gmw_grid(b, g, J, Q, wmin, wmax, 0)
 end
 
-function gausskernel(kernel_dim, kernel_params, padding)
+function gausskernel(kernel_dim, kernel_params)
     s = kernel_params[1]
     t = LinRange(0, 1, kernel_dim)
     g = exp.(-0.5 * ((t .- 0.5) / s) .^ 2)
-    if padding > 0
-        g = vcat(g, zeros(padding))
-    end
     g = g / sum(g)
     return g
 end
 
-function gauss_expo_kernel(kernel_dim, kernel_params, padding)
+function gauss_expo_kernel(kernel_dim, kernel_params)
     s, alpha, n = kernel_params
     sigmas = exp.([log(s) * i * alpha for i = 0:(n-1)])
-    return [gausskernel(kernel_dim, sigma, padding) for sigma in sigmas]
+    return [gausskernel(kernel_dim, sigma) for sigma in sigmas]
 end
 
-function rectkernel(kernel_dim, kernel_params, padding)
+function rectkernel(kernel_dim, kernel_params)
     n = kernel_dim
     t = LinRange(0, 1, kernel_dim)
-    T = kernel_params[1] / n
+    T = (kernel_params[1] / n) / 2
     g = zeros(Float64, n)
-    g[abs.(t .- 0.5).<T] .= 1 / n
-    if padding > 0
-        g = vcat(g, zeros(padding))
-    end
+    g[abs.(t .- 0.5).<=T] .= 1
+    g = g / sum(g)
     return g
 end
 
@@ -166,7 +163,7 @@ function averaging_kernel(
     kernel_dim::Integer,
 )
     if kernel_type == :gaussian
-        avg_kernel = gausskernel(kernel_dim, kernel_params, 0)
+        avg_kernel = gausskernel(kernel_dim, kernel_params)
     elseif kernel_type == :gaussian_exponential
         avg_kernel = gauss_expo_kernel(kernel_dim, kernel_params)
     elseif kernel_type == :rect
@@ -188,15 +185,15 @@ struct GMWFrame
     analytic::Bool
 end
 
-function GMWFrame(scale_params::ScaleParams)
+function GMWFrame(scale_params::ScaleParams; analytic = false, selfdual = true)
     (; b, g, J, Q, wmin, wmax, wave_dim) = scale_params
     gmw_params = wavelet_parameters(b, g, J, Q, wmin, wmax)
-    return GMWFrame(wave_dim, gmw_params)
+    return GMWFrame(wave_dim, gmw_params; analytic, selfdual)
 end
 
 function GMWFrame(
     N::Integer,
-    gmw_params::AbstractArray{<:AbstractVector{<:Real}},
+    gmw_params::AbstractArray{<:AbstractVector{<:Real}};
     selfdual = true,
     analytic = false,
 )
@@ -249,17 +246,24 @@ function GMWFrame(
     return GMWFrame(N, gmw_params, gmw_frame, freq_peaks, sigma_waves, selfdual, analytic)
 end
 
-function cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...)
+function cross_scalogram(
+    x::AbstractArray{<:Real},
+    y::AbstractArray{<:Real},
+    dt::Int64,
+    gmw_frame::Union{Vector{<:AbstractArray{T}},GMWFrame},
+    averaging_kernel::Union{AbstractVector{<:Real},Vector{<:AbstractVector{<:Real}}},
+    analytic = false,
+) where {T<:Union{Real,Complex}}
     L = [x, y]
     C = [(1, 2)]
-    out = cross_scalogram(L, C, args...)
+    out = cross_scalogram(L, C, dt, gmw_frame, averaging_kernel, analytic)
     return out[C[1]]
 end
 
 function cross_scalogram(
     L::Vector{<:AbstractArray{<:Real}},
     C::Vector{Tuple{Int64,Int64}},
-    deltat::Int64,
+    dt::Int64,
     gmw_frame::Union{Vector{<:AbstractArray{T}},GMWFrame},
     averaging_kernel::Union{AbstractVector{<:Real},Vector{<:AbstractVector{<:Real}}},
     analytic = false,
@@ -270,7 +274,7 @@ function cross_scalogram(
     work_dim = length(L[1])
     input_dim = work_dim
     wave_dim = length(gmw_frame[1])
-    time_sampling = 1:deltat:work_dim
+    time_sampling = 1:dt:work_dim
     if averaging_kernel isa Vector{Float64}
         many_kernels = false
     else
