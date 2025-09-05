@@ -1,5 +1,6 @@
 using Test
 using FFTW, LinearAlgebra
+using TurbulenceFlux
 import TurbulenceFlux: CConv, _default_phase_kernel
 @testset "FFT-based Convolutional Kernel" begin
     work_dim = 16
@@ -142,8 +143,7 @@ import TurbulenceFlux: averaging_kernel
     end
 end
 
-import TurbulenceFlux: cross_scalogram, GMWFrame, ScaleParams
-
+import TurbulenceFlux: cross_scalogram, GMWFrame, ScaleParams, _default_phase_kernel
 @testset "Cross-Scalogram test" for work_dim in [8192, 8191]
     work_dim = 8192
     kernel_dim = wave_dim = work_dim
@@ -159,6 +159,10 @@ import TurbulenceFlux: cross_scalogram, GMWFrame, ScaleParams
     x3 = x2 + x1
     deltat = 1
     gmw = GMWFrame(sp)
-    avg_kernel = vcat(1, zeros(kernel_dim - 1))
+    avg_kernel = vcat(ones(1), zeros(kernel_dim - 1))
+    avg_kernel = circshift(avg_kernel, _default_phase_kernel(kernel_dim))
     out = cross_scalogram(x1, x1, deltat, gmw, avg_kernel)
+    @test isapprox(sum(out), 1) # The flux is one between x1 and x1
+    out = cross_scalogram(x1, x2, deltat, gmw, avg_kernel)
+    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
 end

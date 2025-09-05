@@ -304,5 +304,10 @@ function cross_scalogram(
             out[c][i] = f
         end
     end
-    return out
+    out_hcat = Dict()
+    for c in C
+        cs = [out[c][i] for i = 1:length(gmw_frame)]
+        out_hcat[c] = stack(cs)
+    end
+    return out_hcat
 end

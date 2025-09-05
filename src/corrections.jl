@@ -263,6 +263,7 @@ function planar_fit(X::AbstractArray{<:Real,2}, thresh = 1.1)
     # @assert isapprox(P * vref_low, c_low) # make sure that we get c_low, by rotating vref_low
     @debug "Rotation info" R c_low axis theta P P * R'
     # TODO: add full alignment with axis_high=c_low and theta_high=acos(P*vref_high,c_high)
+    # The horizontal rotation will be normal to the new z axis and the angle is between P*vref_high and c_high
     X_rot = X * P
     return (X_rot, P, theta)
 end
