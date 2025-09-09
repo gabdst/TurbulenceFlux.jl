@@ -22,8 +22,8 @@ include("corrections.jl")
 include("flux.jl")
 include("diff.jl")
 
-
-export ScaleParams,
+export DecompParams,
+    ScaleParams,
     TimeParams,
     GMWFrame,
     cross_scalogram,

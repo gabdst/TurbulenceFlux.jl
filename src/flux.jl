@@ -1,3 +1,35 @@
+mutable struct TurbulentFluxEstimate
+    work_dim::Int64
+    mean_wind::Vector{Float64}
+
+end
+
+
+"""
+    mean_wind_speed([u,v,w],time_params)
+"""
+function mean_wind_speed(
+    wind_speeds::AbstractVector{<:AbstractVector{<:Real}},
+    tp::TimeParams,
+)
+    length(wind_speeds) == 3 ||
+        throw(error("Three wind speed signals expected, got $(length(wind_speeds))"))
+    allequal(length, wind_speeds) ||
+        throw(error("Got wind speed signals of different sizes"))
+    mean_speed = sqrt.(sum(map(x -> abs2.(average(x, tp)), wind_speeds)))
+    return mean_speed
+end
+
+"""
+    mean_density(P,T,time_params)
+"""
+function mean_density(P::AbstractArray{<:Real}, T::AbstractArray{<:Real}, tp::TimeParams)
+    length(P) == length(T) || throw(error("Signals of different size"))
+    density = P ./ (R * T)
+    mean_density = average(density, tp)
+    return mean_density
+end
+
 "Convert vector `F` to flux of type `fluxtype` given the density `density`"
 function tofluxunits(F, density, fluxtype)
     # Using naming convention of FLUXNET
@@ -28,181 +60,62 @@ function map_idx(CI, mapping)
 end
 
 """
-  time_integrate_flux(decomp,mask)
-
-Integrate along the scale domain the flux `decomp` decomposed in the time-scale domain given the integration mask `mask`.
-
-Optionnaly a symbol `fluxtype`can be given to indicate the type of flux such that it is converted to common flux units, see `tofluxunits`.
+  flux_scale_integral(scalo,mask)
 """
-function time_integrate_flux(decomp, mask)
-    size(mask) == size(decomp) || throw(error("Wrong size between mask and decomp"))
-    F = Vector{Float64}(undef, size(decomp, 1))
+function flux_scale_integral(scalo::AbstractArray{<:Real,2}, mask::AbstractArray{Bool,2})
+    size(mask) == size(scalo) || throw(error("Wrong size between mask and scalogram"))
+    F = Vector{Float64}(undef, size(scalo, 1))
     for j in axes(F, 1)
-        values = decomp[j, mask[j, :]]
+        values = scalo[j, mask[j, :]]
         if isempty(values)
             F[j] = NaN
         else
-            F[j] = sum(decomp[j, mask[j, :]])
+            F[j] = sum(values)
         end
     end
     return F
 end
 
-
 """
-    compute_wind_amplitude(wind_speeds,time_params)
-
-Compute the wind amplitude given the three wind speed components stored in `wind_speeds`, with the averaging convolutional kernel parameters `time_params`.
+    flux_scalogram(w,s,time_params,scale_params;with_info=false)
 """
-function compute_wind_amplitude(wind_speeds::AbstractArray{<:Real,2}, tp::TimeParams)
-    input_dim = size(wind_speeds)
-    work_dim = input_dim[1]
-    avg_kernel = averaging_kernel(tp)
-    (; dt, kernel_dim) = tp
-    KernelC = CConv(Float64, input_dim, kernel_dim)
-    time_sampling = 1:dt:work_dim
-    wind_amplitude = KernelC(wind_speeds, avg_kernel)[time_sampling, 1, :]
-    wind_amplitude = mapslices(x -> sqrt(sum(abs2, x)), wind_amplitude, dims = 2)
-    wind_amplitude = dropdims(wind_amplitude, dims = 2)
-    return wind_amplitude
-end
-
-"""
-    compute_density(P,T,time_params)
-
-Compute the density given the pressure `P` (Pa) and the temperature `T` (K) with the averaging convolutional kernel parameters `time_params`.
-"""
-function compute_density(P::AbstractArray{<:Real}, T::AbstractArray{<:Real}, tp::TimeParams)
-    length(P) == length(T) || throw(error("Signals of different size"))
-    work_dim = length(P)
-    input_dim = (work_dim, 1)
-    avg_kernel = averaging_kernel(tp)
-    (; dt, kernel_dim) = tp
-    KernelC = CConv(Float64, input_dim, kernel_dim)
-    time_sampling = 1:dt:work_dim
-    density = P ./ (R * T)
-    density = KernelC(density, avg_kernel)[time_sampling]
-    return density
-end
-
-
-"""
-    timescale_flux_decomp(w,s,time_params,scale_params;with_info=false)
-
-Compute the time-scale decomposition of the flux `ws` given averaging and wavelet kernel parameters `time_params` and `scale_params`.
-
-# Arguments
-
-  - `w::Vector`: velocity signal (e.g. the vertical wind speed)
-  - `s::Vector{Vector}`: scalar signals (temperature, gaz concentration,...)
-  - `time_params::NamedTuple`: TODO 
-  - `scale_params::NamedTuple`: TODO 
-  - `with_info::Bool=false`: Output informations about the decomposition
-  - `func=nothing`: Apply function `func` before averaging step
-"""
-function timescale_flux_decomp(
-    w::AbstractArray{<:Real},
-    s::Vector{<:AbstractArray{<:Real}},
-    tp::TimeParams,
-    sp::ScaleParams;
-    with_info = false,
+function flux_scalogram(
+    w::AbstractVector{<:Real},
+    s::AbstractVector{<:AbstractVector{<:Real}},
+    dp::DecompParams,
 )
     allequal(length, s) && length(w) == length(s[1]) ||
         throw(error("Signals must be of the same size."))
+    (; tp, sp) = dp
     avg_kernel = averaging_kernel(tp)
-    gmw_frame = GMWFrame(sp)
+    gmw = GMWFrame(sp)
     C = [(1, i + 1) for i = 1:length(s)]
     L = [w, s...]
-
-    out = cross_scalogram(L, C, tp.dt, gmw_frame, avg_kernel)
-    if with_info
-        return (; info = (gmw_frame, avg_kernel), out = out)
-    else
-        return out
-    end
-
+    scalograms = cross_scalogram(L, C, dp, gmw, avg_kernel)
 end
 
 """
-  get_timescale_mask(work_dim,sigma_waves,sigma_averaging,factor=(3,3),max_sigma=false)
-
-Construct a time-scale mask given the time deviation of the wavelet filters and the averaging kernel.
-
-# Arguments
-
- - `work_dim`: dimension of analysis.
- - `sigma_waves`: wavelet filters time-deviation
- - `sigma_averaging`: averaging kernel time-deviation
- - `factor=(3,3)`: amounts by which time-deviations of wavelets and filters are multiplied
- - `max_sigma=false`: return a border error mask with the maximum time deviation
+    reynolds_w_scalogram([u,v,w],time_params,scale_params)
 """
-function get_timescale_mask(
-    work_dim,
-    sigma_waves,
-    sigma_averaging,
-    factor = (3, 3),
-    max_sigma = false,
-)
-    mask = falses(work_dim, length(sigma_waves))
-    max_sigma_val =
-        ceil(Int, maximum(sigma_waves) * factor[1] + sigma_averaging * factor[2])
-    for (i, s) in enumerate(sigma_waves)
-        if max_sigma
-            s = max_sigma_val
-        else
-            s = ceil(Int, s * factor[1] + sigma_averaging * factor[2])
-        end
-        mask[1:s, i] .= true
-        mask[(end-s+1):end, i] .= true
-    end
-    return mask
-end
-
-
-"""
-    amplitude_reynolds_w(u,v,w,time_params,scale_params)
-
-Compute the amplitude of the vertical components of the Reynold's tensor using the three wind speed components `u`,`v` and `w` and the time-scale decomposition parameters `time_params` and `scale_params`.
-
-# Arguments
-
-  - `u,v,w::Vector`: wind speed components signal (e.g. the vertical wind speed)
-  - `time_params::NamedTuple`: Named Tuple of the parameters for initializing the averaging convolutional kernel, see`init_averaging_conv_kernel`
-  - `scale_params::NamedTuple`: Named Tuple of parameters for initializing the wavelet convolutional kernel, see `init_wave_conv_kernel`
-"""
-function amplitude_reynolds_w(
-    u::AbstractArray{<:Real},
-    v::AbstractArray{<:Real},
-    w::AbstractArray{<:Real},
-    tp::TimeParams,
-    sp::ScaleParams;
-    with_info = false,
-)
-    return timescale_flux_decomp(w, [w, u, v], tp, sp; with_info)
+function reynolds_w_scalogram(s::AbstractVector{<:AbstractVector{<:Real}}, dp::DecompParams)
+    u, v, w = s
+    scalos = flux_scalogram(w, [u, v], dp)
+    ww = scalos[(1, 1)]
+    wu = scalos[(1, 2)]
+    wv = scalos[(1, 3)]
+    return sqrt.(ww .^ 2 .+ wu .^ 2 .+ wv .^ 2)
 end
 
 """
-    turbulence_mask(u,v,w,time_params,scale_params,method,method_params...)
-
-Estimate a time-scale mask of the vertical turbulent transport using the three wind speed components `u`,`v` and `w` using the time-scale decomposition parameters `time_params` and `scale_params` (see `init_averaging_conv_kernel` and `init_wave_conv_kernel`) and the turbulence extraction methods `method` with parameters `method_params`.
-
-# Arguments
-
-  - `u,v,w::Vector`: wind speed components signal (e.g. the vertical wind speed)
-  - `time_params::NamedTuple`: Named Tuple of the parameters for initializing the averaging convolutional kernel, see`init_averaging_conv_kernel`
-  - `scale_params::NamedTuple`: Named Tuple of parameters for initializing the wavelet convolutional kernel`, see `init_wave_conv_kernel`
-  - `method::Function`: Method used to extract the turbulent transport signal, see `turbu_extract_threshold`,`turbu_extract_laplacian` and `turbu_extract_diffusion`.
+    turbulence_mask([u,v,w],time_params,scale_params,method,method_params...)
 """
 function turbulence_mask(
-    u::AbstractArray{<:Real},
-    v::AbstractArray{<:Real},
-    w::AbstractArray{<:Real},
-    tp::TimeParams,
-    sp::ScaleParams,
+    s::AbstractVector{<:AbstractVector{<:Real}},
+    dp::DecompParams,
     method::Function,
     method_params...,
 )
-    (; info, tauw) = amplitude_reynolds_w(u, v, w, tp, sp; with_info = true)
+    tauw = reynolds_w_scalogram(s, dp)
     return method(tauw; method_params...)
 end
 function turbulence_mask(tauw, ; method::Function, method_params...)
@@ -268,77 +181,65 @@ function turbu_extract_laplacian(
     return (masks, dtau, itp)
 end
 
-"""
-   WIP 
-"""
-function turbu_extract_diffusion(
-    tauw;
-    time_sampling,
-    freq_peak,
-    ref_dist = 1,
-    mean_wind = nothing,
-)
-    S = size(tauw)
-    CI = CartesianIndices(S)
-    # Reject low-pass filter i.e. at freq_p[end]
-    mask = trues(S)
-    mask[:, end] .= false
-    if isnothing(mean_wind)
-        vertex_mapping =
-            (c::CartesianIndex) -> Float64[
-                time_sampling[c[1]],
-                log.(freq_peak[c[2]] * ref_dist),
-                log(tauw[c[1], c[2]]),
-            ]
-    else
-        vertex_mapping =
-            (c::CartesianIndex) -> Float64[
-                time_sampling[c[1]],
-                log.(freq_peak[c[2]] * ref_dist / mean_wind[c[1]]),
-                log(tauw[c[1], c[2]]),
-            ]
-    end
-    t, eta, tau_mapped = map_idx(CI, vertex_mapping)
-    adj_mat = grid_adj_mat(S, mask)
-    sigma_tau = std(tau_mapped[mask[:]])
-    function weight_func(i::Int, j::Int)
-        c_i = CI[i]
-        c_j = CI[j]
-        v_i = vertex_mapping(c_i)[3]
-        v_j = vertex_mapping(c_j)[3]
-        v = exp(-(v_i - v_j) / sigma_tau) # Asymetric Potential
-        return v
-    end
-    weights_mat = generate_weight_mat(adj_mat, weight_func; normalize = true)
-    g = MyGraph(adj_mat, weights_mat)
-    tau_rey = (reshape(t, S), reshape(eta, S), reshape(tau_mapped, S))
-    return (tau_rey, g)
-    #
-    #  s=-0.1 .< Y .< 0.1
-    #  s=sparse(vec(s))
-    #  M=sum(s)
-    #  func_acc(s,i)=begin
-    #      x=s .+ droptol!(g.weights*s,1e-6)
-    #      x=x*(M/sum(x))
-    #      return x
-    #  end
-    #  #all_s=accumulate(func_acc,1:10,init=s);
-    #  @warn  println("Not Fully implemented yet")
-    #  return (g,Δv,sigma,(X,Y,tau_mapped))
-end
+# function turbu_extract_diffusion(
+#     tauw;
+#     time_sampling,
+#     freq_peak,
+#     ref_dist = 1,
+#     mean_wind = nothing,
+# )
+#     S = size(tauw)
+#     CI = CartesianIndices(S)
+#     # Reject low-pass filter i.e. at freq_p[end]
+#     mask = trues(S)
+#     mask[:, end] .= false
+#     if isnothing(mean_wind)
+#         vertex_mapping =
+#             (c::CartesianIndex) -> Float64[
+#                 time_sampling[c[1]],
+#                 log.(freq_peak[c[2]] * ref_dist),
+#                 log(tauw[c[1], c[2]]),
+#             ]
+#     else
+#         vertex_mapping =
+#             (c::CartesianIndex) -> Float64[
+#                 time_sampling[c[1]],
+#                 log.(freq_peak[c[2]] * ref_dist / mean_wind[c[1]]),
+#                 log(tauw[c[1], c[2]]),
+#             ]
+#     end
+#     t, eta, tau_mapped = map_idx(CI, vertex_mapping)
+#     adj_mat = grid_adj_mat(S, mask)
+#     sigma_tau = std(tau_mapped[mask[:]])
+#     function weight_func(i::Int, j::Int)
+#         c_i = CI[i]
+#         c_j = CI[j]
+#         v_i = vertex_mapping(c_i)[3]
+#         v_j = vertex_mapping(c_j)[3]
+#         v = exp(-(v_i - v_j) / sigma_tau) # Asymetric Potential
+#         return v
+#     end
+#     weights_mat = generate_weight_mat(adj_mat, weight_func; normalize = true)
+#     g = MyGraph(adj_mat, weights_mat)
+#     tau_rey = (reshape(t, S), reshape(eta, S), reshape(tau_mapped, S))
+#     return (tau_rey, g)
+#     #
+#     #  s=-0.1 .< Y .< 0.1
+#     #  s=sparse(vec(s))
+#     #  M=sum(s)
+#     #  func_acc(s,i)=begin
+#     #      x=s .+ droptol!(g.weights*s,1e-6)
+#     #      x=x*(M/sum(x))
+#     #      return x
+#     #  end
+#     #  #all_s=accumulate(func_acc,1:10,init=s);
+#     #  @warn  println("Not Fully implemented yet")
+#     #  return (g,Δv,sigma,(X,Y,tau_mapped))
+# end
 
 
 """
-    flux_estimation(data,z_d,fs,time_params,scale_params)
-
-Wavelet based estimation of the flux given averaging parameters `time_params` and wavelet parameters `scale_params`.
-
-# Arguments
- - `data::DataFrame`: wind speed, pressure and gas concentrations measurements
- - `z_d::Real`: measurement height above the zeros place displacement height
- - `fs::Integer`: sampling frequency
- - `time_params::NamedTuple`: averaging parameters
- - `scale_params::NamedTuple`: wavelet decomposition parameters
+    estimate_flux(data,z_d,fs,time_params,scale_params)
 """
 function flux_estimation(
     data;
@@ -485,30 +386,4 @@ function flux_estimation(
     ))
     results = Dict(res_p)
     return results
-end
-
-
-
-## UTILS, TODO: put in utils.jl
-
-function find_nan_regions(F)
-    s = Int64[]
-    e = Int64[]
-    i = 1
-    L = length(F)
-    while !isnothing(i)
-        i = findnext(isnan, F, i)
-        if isnothing(i)
-            break
-        else
-            si = i > 1 ? i - 1 : i
-            push!(s, si)
-        end
-
-        j = findnext(!isnan, F, i)
-        sj = isnothing(j) ? L : j
-        push!(e, sj)
-        i = j # End loop if j==nothing
-    end
-    return (s, e)
 end

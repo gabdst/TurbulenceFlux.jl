@@ -1,8 +1,3 @@
-using Test
-using LinearAlgebra
-using Statistics
-using Rotations
-
 import TurbulenceFlux: optim_timelag
 @testset "Timelag Optimization" begin
     N = 1024
@@ -92,7 +87,6 @@ import TurbulenceFlux: planar_fit, ErrorRotationAmbiguous
     end
 end
 
-using Test
 import TurbulenceFlux:
     RepeatedMedianRegressor, flag_spikes, getparams, flag_nan, interpolate_errors!
 @testset verbose = true "Despiking" begin

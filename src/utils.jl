@@ -12,6 +12,26 @@ function running_func(x::AbstractArray{<:Real}, n::Integer, f; step = 1)
     return out
 end
 
+function find_nan_regions(F)
+    s = Int64[]
+    e = Int64[]
+    i = 1
+    L = length(F)
+    while !isnothing(i)
+        i = findnext(isnan, F, i)
+        if isnothing(i)
+            break
+        else
+            push!(s, i)
+        end
+        j = findnext(!isnan, F, i)
+        sj = isnothing(j) ? L : j - 1
+        push!(e, sj)
+        i = j # End loop if j==nothing
+    end
+    return (s, e)
+end
+
 import Base:
     parent,
     iterate,
@@ -28,7 +48,9 @@ import Base:
     SizeUnknown
 
 # Sensors Errors are replaced with NaN values, they are skipped when applying statistics.
-# Directly adapted from Statistics.skipmissing
+# The following code is directly adapted from Statistics.skipmissing
+# However, this skipnan implementation allocates too much so we rely on NanStatistics instead. We keep it as a pratical tool in some cases.
+
 skipnan(itr) = SkipNan(itr)
 
 struct SkipNan{T}
