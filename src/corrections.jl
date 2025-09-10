@@ -138,7 +138,7 @@ end
 """
     optim_timelag(x, y, fc, fs)
 
-Compute the optimal time lag between two signals `x` and `y` using a frequency-domain approach.
+Compute the time lag between two signals `x` and `y` using a frequency-domain approach.
 
 # Arguments
 - `x::AbstractVector{Float64}`: First input signal.

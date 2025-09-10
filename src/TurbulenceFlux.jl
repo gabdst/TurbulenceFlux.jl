@@ -1,13 +1,16 @@
 module TurbulenceFlux
-using LinearAlgebra
-using Statistics
-using Rotations
-using LoopVectorization
-using NaNStatistics
-using Statistics
-using PhysicalConstants, Unitful
-using DataInterpolations
-using Random, StatsFuns, FFTW
+using LinearAlgebra,
+    NaNStatistics,
+    Statistics,
+    Rotations,
+    Random,
+    StatsFuns,
+    FFTW,
+    LoopVectorization,
+    PhysicalConstants,
+    Unitful,
+    DataInterpolations,
+    DataFrames
 import GeneralizedMorseWavelets as GMW
 import Loess
 
@@ -33,7 +36,12 @@ export DecompParams,
     flag_nan,
     interpolate_errors!,
     optim_timelag,
-    planar_fit
+    planar_fit,
+    mean_wind,
+    mean_density,
+    flux_scale_integral,
+    flux_scalogram,
+    reynolds_w_scalogram
 end
 
 # export timescale_flux_decomp,
