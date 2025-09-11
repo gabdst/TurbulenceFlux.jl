@@ -98,6 +98,10 @@ function flag_spikes(x::AbstractArray{<:Real}, n::Int64, f = 5)
     itr_x = Iterators.partition(x, n)
     itr_m = Iterators.partition(m, n)
     for (xv, mv) in zip(itr_x, itr_m)
+        if length(xv) != rmr.n
+            # May happen at the end of the loop when length(x) is not divisible by n
+            rmr = RepeatedMedianRegressor(length(xv))
+        end
         mu, params = rmr(xv)
         mv .= abs.(xv .- mu) .> params.sigma * f
     end
@@ -184,9 +188,9 @@ function optim_timelag(
     end
     tau = 0:(L-1)
     if iseven(N)
-        tau = vcat(tau, reverse(-tau .- 1)[3:end])
+        tau = -vcat(tau, reverse(-tau .- 1)[3:end])
     else
-        tau = vcat(tau, reverse(-tau .- 1)[2:end])
+        tau = -vcat(tau, reverse(-tau .- 1)[2:end])
     end
     out = irfft(rfft(x) .* conj(rfft(y)) .* high_pass, N)
     found_lag = tau[argmax(abs.(out))]
@@ -230,6 +234,9 @@ function planar_fit(X::AbstractArray{<:Real,2}, thresh = 1.1)
         throw(ArgumentError("The threshold (`thresh`) should be > 1 (current: $thresh)"))
     end
     C = X' * X
+    if !isposdef(C)
+        throw(ErrorRotationFailure())
+    end
     E = svd(C)
     S = E.S # Singular values in descending order
     R = E.Vt
@@ -245,7 +252,6 @@ function planar_fit(X::AbstractArray{<:Real,2}, thresh = 1.1)
         throw(ErrorRotationAmbiguous(thresh))
     end
     # The main assumption here is that u carry the most of the energy and w the least amount of energy
-    lambda_low = S[3]
     c_low = R[3, :]
     vref_low = [0; 0; 1]
     # WIP: implement the full rotation by also rotating toward the highest singular value
@@ -269,6 +275,15 @@ function planar_fit(X::AbstractArray{<:Real,2}, thresh = 1.1)
     return (X_rot, P, theta)
 end
 
+struct ErrorRotationFailure <: Exception
+    msg::String
+    function ErrorRotationFailure()
+        msg = """
+          Planar fit failed: Not enough data to perform planar fit or data corrupted. Check velocity signals."""
+        new(msg)
+    end
+end
+
 struct ErrorRotationAmbiguous <: Exception
     msg::String
     function ErrorRotationAmbiguous(thresh::Real)
@@ -277,4 +292,74 @@ struct ErrorRotationAmbiguous <: Exception
           Check data preprocessing (filtering) or adjust `thresh` (current: $(thresh))."""
         new(msg)
     end
+end
+
+function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
+    var_names = get_var_names(df)
+    work_dim = length(df[:TIMESTAMP])
+    qc = QualityControl()
+    for v in var_names
+        update_quality_control!(qc, v, SparseVector{Bool,Int}(undef, work_dim))
+    end
+    # Note that df[!,v] does not allocate, it is a view (a pointer). df[:,v] would create a new array.
+    if :despiking in cp.corrections
+        for var in var_names
+            # TODO: check QC vars in df if available
+            mask = flag_nan(df[var])
+            mask = flag_spikes(df[var], cp.window_size_despiking) .|| mask
+            update_quality_control!(qc, var, mask)
+            interpolate_errors!(df[var], mask)
+            s, e = find_error_regions(mask)
+            if !isempty(s)
+                c = e .- s
+                @info "For variable $var, found $(count(mask)) errors with the longest error period of size $(maximum(c))"
+            end
+        end
+    end
+    if :planar_fit in cp.corrections
+        X = [df[:U] df[:V] df[:W]]
+        if iszero(cp.rot_matrix)
+            X_rot, P, theta = planar_fit(X)
+            cp.rot_matrix .= P # update rot matrix in correction params
+            @info "Found rotation angle for z axis of $(rad2deg(theta))"
+        else
+            X_rot = X * cp.rot_matrix
+        end
+        df[:U] .= X_rot[:, 1]
+        df[:V] .= X_rot[:, 2]
+        df[:W] .= X_rot[:, 3]
+        mask = get_qc(qc, (:U, :V, :W))
+        update_quality_control!(qc, (:U, :V, :W), mask)
+    end
+    if :optim_timelag in cp.corrections
+        for var in intersect(gas_variables, var_names)
+            W = df[:W]
+            gas = df[var]
+            tau, out, found_lag = optim_timelag(W, gas, cp.fc_timelag, aux.fs)
+            cp.timelags[var] = found_lag
+            @info "Found timelag for gas $var: $found_lag samples"
+            if 0 < found_lag
+                if cp.timelag_max == 0 || found_lag < cp.timelag_max
+                    mask = SparseVector{Bool,Int}(undef, length(gas))
+                    mask .= get_qc(qc, var)
+                    circshift!(mask, -found_lag)
+                    mask[end-found_lag+1:end] .= true
+                    update_quality_control!(qc, var, mask)
+                    circshift!(gas, -found_lag)
+                end
+            elseif found_lag < 0
+                throw(error("found negative timelag for gas $var"))
+            end
+        end
+    end
+    # TODO: add sonic temperature correction
+    if !(:TA in var_names)
+        # T_SONIC should be present
+        # For now we overwrite TA with T_SONIC
+        df[:TA] = df[!, :T_SONIC]
+        qc[:TA] = copy(qc[:T_SONIC])
+    end
+    df[:TA] .+= 273.15 # Conversion to K
+    df[:PA] .*= 1000 # Conversion to Pa
+    return (df, qc)
 end

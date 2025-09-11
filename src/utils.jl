@@ -1,3 +1,13 @@
+function to_nt(x::Dict)
+    NamedTuple(k => x[k] for k in keys(x))
+end
+function to_dict(x::NamedTuple)
+    Dict(k => x[k] for k in keys(x))
+end
+function to_dict(x)
+    Dict(k => x[:, k] for k in propertynames(x))
+end
+
 function running_func(x::AbstractArray{<:Real}, n::Integer, f; step = 1)
     N = length(x)
     S = 1:step:N
@@ -12,19 +22,19 @@ function running_func(x::AbstractArray{<:Real}, n::Integer, f; step = 1)
     return out
 end
 
-function find_nan_regions(F)
+function find_error_regions(F)
     s = Int64[]
     e = Int64[]
     i = 1
     L = length(F)
     while !isnothing(i)
-        i = findnext(isnan, F, i)
+        i = findnext(F, i)
         if isnothing(i)
             break
         else
             push!(s, i)
         end
-        j = findnext(!isnan, F, i)
+        j = findnext(!, F, i)
         sj = isnothing(j) ? L : j - 1
         push!(e, sj)
         i = j # End loop if j==nothing

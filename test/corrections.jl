@@ -1,10 +1,9 @@
-import TurbulenceFlux: optim_timelag
 @testset "Timelag Optimization" begin
     N = 1024
     fs = 1
     make_lag(N, tlag) = begin
         x = vcat(1, zeros(N - 1))
-        y = circshift(x, -tlag)
+        y = circshift(x, tlag)
         return x, y
     end
     @testset "Size Parity and Timelag check" for N in [1024, 1023],
@@ -27,8 +26,7 @@ import TurbulenceFlux: optim_timelag
     end
 end
 
-
-import TurbulenceFlux: planar_fit, ErrorRotationAmbiguous
+import TurbulenceFlux: ErrorRotationAmbiguous
 @testset "Planar Fit" begin
     rand_angles() = (rand(3) .- 0.5) * pi / 2
     function make_rotation(N, pitch, roll, yaw, sigma)
@@ -87,8 +85,6 @@ import TurbulenceFlux: planar_fit, ErrorRotationAmbiguous
     end
 end
 
-import TurbulenceFlux:
-    RepeatedMedianRegressor, flag_spikes, getparams, flag_nan, interpolate_errors!
 @testset verbose = true "Despiking" begin
     function make_trend(n, beta = 2, mu = -1, sigma = 1)
         t_i(i) = 2 * (i - 1) / (n - 1) - 1
