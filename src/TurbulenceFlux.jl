@@ -124,7 +124,6 @@ include("conv.jl")
 include("graph.jl")
 include("corrections.jl")
 include("flux.jl")
-include("diff.jl")
 
 export DecompParams,
     ScaleParams,
