@@ -1,29 +1,50 @@
+push!(LOAD_PATH,".")
+using TurbulenceFlux
+
+using Pkg
+Pkg.activate()
 using JLD2
 using DataFrames
-using TurbulenceFlux
-using GLMakie
+using CairoMakie
 using Statistics
-
 
 # Some data available at https://drive.proton.me/urls/VM51CC7Y6G#q9ykofXnuqys
 data = jldopen("data_sample.jld2")
 dates = keys(data)
 d = first(dates)
-signals = data[d]["Signals"]
-u = signals.U
-v = signals.V
-w = signals.W
-P = signals.P * 1e3 # To Pa
-T = signals.T .+ 273.15 # To K
-C = signals.CO2 # umol/mol
+signals = TurbulenceFlux.to_dict(data[d]["Signals"])
+# bad variable naming in data_sample.jld2
+signals[:PA] = signals[:P]
+signals[:TA] = signals[:T]
+signals[:TIMESTAMP] = signals[:Date]
+pop!(signals,:P)
+pop!(signals,:T)
+pop!(signals,:Date)
+work_dim = length(signals[:TA])
+fs = 20 #Hz
+z_d = 10 #m
+aux = AuxVars(;fs,z_d)
+cp = CorrectionParams()
+# Wavelet Parameters
+b=1
+g=3
+J = floor(Int, log2(work_dim)) 
+Q = 4
+wmin = 4*pi/work_dim
+wmax = pi
+wave_dim = work_dim
+sp = ScaleParams(b,g,J,Q,wmin,wmax,wave_dim)
+# Time-Averaging Parameters
+kernel_dim = work_dim
+kernel_type = :gaussian
+kernel_params = [30*20*fs] # 30 min averaging time
+tp = TimeParams(kernel_dim,kernel_type,kernel_params)
+dp = DecompParams(sp,tp,work_dim)
+tp_aux = tp
+method=TurbuLaplacian(;tr_tau = 1e-3,tr_dtau=1,dp,tp_aux)
 
-# Assuming u, v, w are the three wind speed components (m/s),
-# P (Pa) and T (K) are pressure and temperature signals,
-# C (umol/mol) is the CO2 concentration
+results = estimate_flux(signals,aux,cp,method)
 
-work_dim = length(u) # size of signals (24h)
-fs = 20 # Sampling frequency
-ref_dist = 10 # Distance of reference (m), e.g., tower flux height - displacement height
 
 # Defining time decomposition parameters
 dt = 60 * fs # 1min time sampling corresponding to a 1min time flux
