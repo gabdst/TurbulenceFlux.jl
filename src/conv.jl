@@ -212,7 +212,7 @@ wavelet_parameters(sp::ScaleParams) =
 wavelet_parameters(dp::DecompParams) = wavelet_parameters(ScaleParams(dp.sp))
 
 frequency_peaks(dp::DecompParams) = frequency_peaks(ScaleParams(dp))
-frequency_peaks(sp::ScaleParams) = map(p -> GMW.peak_n(p, 1), wavelet_parameters(sp))
+frequency_peaks(sp::ScaleParams) = vcat(map(p -> GMW.peak_n(p, 1), wavelet_parameters(sp)),0.0)
 
 _gauss(t, p) = exp(-0.5 * (t / p) .^ 2)
 _dtgauss(t, p) = -(t / p^2) * _gauss(t, p)
