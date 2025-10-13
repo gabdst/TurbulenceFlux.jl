@@ -19,6 +19,7 @@ A `FluxEstimationMethod` based on the Reynolds decomposition.
 # Keyword Arguments
 - `tp::TimeParams`: parameters used to decompose signals into mean and variable parts.
 - `tp_aux::TimeParams`: parameters used to estimate auxilliary variables.
+- `sensitivity::Bool=true` : flag for computing sensitivity against time and averaging parameter
 
 # Description
 To be used with `estimate_flux` in order to perform flux estimation. The Reynolds decomposition is defined via the time decomposition parameters `TimeParams`. The `tp` parameters are used to estimate the fluxes whil the `tp_aux` parameters are used to estimate auxilliary variables such as mean wind and density.
@@ -50,6 +51,7 @@ A FluxEstimationMethod based on the thresholding of the Reynolds tensor in time-
 - `dp::DecompParams`: time-frequency decomposition parameters
 - `tp_aux::TimeParams`: the parameters used to estimate auxilliary variables such as the mean wind speed and the density.
 - `tr_tau::Real`: the threshold used to isolate the vertical turbulent transport.
+- `sensitivity::Bool=true` : flag for computing sensitivity against time and averaging parameter
 
 # Description
 To be used with `estimate_flux` in order to perform flux estimation. Once the signals are decomposed in time-frequency space (TODO)... 
@@ -90,6 +92,7 @@ A FluxEstimationMethod based on the thresholding and laplacian of the Reynolds t
 - `tr_tau::Real`: the threshold used to isolate the vertical turbulent transport.
 - `tr_dtau::Real`: the threshold used to isolate the zeros in the laplacian of TAUW_TF
 - `span::Real=0.25`: parameter used to influence the locally weighted regression algorithm
+- `sensitivity::Bool=true` : flag for computing sensitivity against time and averaging parameter
 
 # Description
 To be used with `estimate_flux` in order to perform flux estimation. Once the signals are decomposed in time-frequency space (TODO)...
@@ -516,7 +519,7 @@ function estimate_flux(
     if :H2O in var_names
         C[(:W, :H2O)] = :LE_TF
     end
-    L = Dict(k => df[!, k] for k in unique(Iterators.flatten(collect(keys(C)))))
+    L = Dict(k => df[k] for k in unique(Iterators.flatten(collect(keys(C)))))
     scalo = cross_scalogram(L, C, dp)
     for c in keys(scalo)
         scalo[c] = tofluxunits(scalo[c], estimate[:RHO], c)
@@ -556,11 +559,25 @@ function estimate_flux(
         tm = turbulence_mask(scalo[:TAUW], method)
         estimate[:TAUW_TF_M] = tm.TAUW_TF_M
     end
-
+    if method.sensitivity
+        C_dp =
+            Dict(k => Symbol(split(string(v), "_TF")[1], "_DSIGMA", "_TF") for (k, v) in C)
+        C_dt = Dict(k => Symbol(split(string(v), "_TF")[1], "_DT", "_TF") for (k, v) in C)
+        dp_scalo = dp_cross_scalogram(L, C_dp, dp)
+        dt_scalo = dt_cross_scalogram(L, C_dt, dp)
+        for c in keys(dp_scalo)
+            dp_scalo[c] = tofluxunits(dp_scalo[c], estimate[:RHO], c)
+        end
+        for c in keys(dt_scalo)
+            dt_scalo[c] = tofluxunits(dt_scalo[c], estimate[:RHO], c)
+        end
+        merge!(scalo, dp_scalo, dt_scalo)
+    end
+    # Scale Integral
     for c in values(C)
         estimate[c] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
         mask = sparse(flux_scale_integral(qc[c], estimate[:TAUW_TF_M]))
-        var = Symbol(split(Symbol(c), "_TF")[1])
+        var = Symbol(split(string(c), "_TF")[1])
         update_quality_control!(qc, var, mask)
     end
     freq_peaks = frequency_peaks(dp)

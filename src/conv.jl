@@ -294,6 +294,21 @@ function averaging_kernel(
     return avg_kernel
 end
 
+function dt_fft(x::AbstractArray{<:Real})
+    N = length(x)
+    if iseven(N)
+        Nh = div(N, 2)
+        k = collect(Complex(0, 2pi / N) * ((-Nh+1):Nh))
+        k[end] = 0
+        circshift!(k, -Nh + 1)
+    else
+        Nh = div(N, 2)
+        k = collect(Complex(0, 2pi / N) * ((-Nh):Nh))
+        circshift!(k, -Nh)
+    end
+    return real(ifft(fft(x) .* k))
+end
+
 dt_averaging_kernel(tp::TimeParams) =
     dt_averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
 dt_averaging_kernel(dp::DecompParams) =
