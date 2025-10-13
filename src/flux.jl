@@ -163,7 +163,7 @@ function normalized_frequency(
     mean_wind::AbstractVector{<:Real},
     distance::Real,
 )
-    return distance * frequencies ./ mean_wind'
+    return distance * frequencies' ./ mean_wind
 end
 
 """
@@ -351,12 +351,18 @@ function turbulence_mask(
         detected[mask_error] .= false # remove points with convolution errors
     end
     detected[(eta.>0)] .= false # remove points above eta = 0
+    ts = collect(Iterators.flatten((t[view(detected,:,i)] for i in 1:size(detected,2))))
 
+    if count(detected) == 0
+        sg = eta[end,:]
+    mask_advec =  mask # Get the mask removing the advection + removing the mean value
+    else
     #itp = _interpolate_eta(t[detected[:]], eta[detected[:]], λ,d) # Old way: Bspline interpolation + smoothness regularization to get interpolated value at each time t, extrapolate with constant values on the borders
     itp = _locally_weighted_regression(t[detected], eta[detected], span)
     sg = itp.(t) #Time-Varying spectral gap
-
     mask_advec = (sg .> eta) .&& mask # Get the mask removing the advection + removing the mean value
+    end
+
     mask_lowcoeff = (log10(tr_tau) .> τ_mapped) .&& mask_advec
     return (;
         TAUW_TF_M = mask_lowcoeff,
@@ -520,6 +526,7 @@ function estimate_flux(
         C[(:W, :H2O)] = :LE_TF
     end
     L = Dict(k => df[k] for k in unique(Iterators.flatten(collect(keys(C)))))
+    @info "Cross-Scalogram computation for $(values(C))"
     scalo = cross_scalogram(L, C, dp)
     for c in keys(scalo)
         scalo[c] = tofluxunits(scalo[c], estimate[:RHO], c)
@@ -528,14 +535,15 @@ function estimate_flux(
     estimate[:TAUW_TF] = _tauw(scalo[:WW_TF], scalo[:UW_TF], scalo[:VW_TF])
 
     # Quality Control via error propagation
-    C_qc = Dict()
-    L_qc = Dict()
+    L_qc = Dict{Symbol,Array{Bool}}()
+    C_qc = Dict{Tuple{Symbol,Symbol},Symbol}()
     for c in keys(C)
         x, y = c
         xq = Symbol(x, :_QC)
         yq = Symbol(y, :_QC)
         v = Symbol(C[c], :_QC)
         C_qc[(xq, yq)] = v
+
         # Add fictitious errors on the border
         qc_x = copy(qc[x])
         qc_x[1] = qc_x[end] = true
@@ -547,10 +555,10 @@ function estimate_flux(
     for c in keys(scalo_qc)
         qc[c] = sparse(abs.(scalo_qc[c]) .> 1e-6) .|| qc[:RHO]
     end
-    qc[:TAUW_TF_QC] = scalo_qc[:WW] .|| scalo_qc[:UW] .|| scalo_qc[:VW]
+    qc[:TAUW_TF_QC] = qc[:WW_TF_QC] .|| qc[:UW_TF_QC] .|| qc[:VW_TF_QC]
 
     if method isa TurbuLaplacian
-        tm = turbulence_mask(estimate[:TAUW_TF], estimate[:WS], aux, method, qc[:TAUW_TF])
+        tm = turbulence_mask(estimate[:TAUW_TF], estimate[:WS], aux, method, qc[:TAUW_TF_QC])
         estimate[:SG] = tm.SG
         estimate[:DTAUW_TF] = tm.DTAUW_TF
         estimate[:TAUW_TF_M] = tm.TAUW_TF_M
@@ -576,7 +584,7 @@ function estimate_flux(
     # Scale Integral
     for c in values(C)
         estimate[c] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
-        mask = sparse(flux_scale_integral(qc[c], estimate[:TAUW_TF_M]))
+        mask = sparse(flux_scale_integral(qc[Symbol(c,:_QC)], estimate[:TAUW_TF_M]))
         var = Symbol(split(string(c), "_TF")[1])
         update_quality_control!(qc, var, mask)
     end
