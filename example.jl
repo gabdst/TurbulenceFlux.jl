@@ -8,97 +8,45 @@ using DataFrames
 using CairoMakie
 using Statistics
 
-# Some data available at https://drive.proton.me/urls/VM51CC7Y6G#q9ykofXnuqys
-data = jldopen("data_sample.jld2")
+## DATA
+# Some data available at https://drive.proton.me/urls/0NHRADNYTC#5q9CLk4V0sbA
+data = jldopen("data_sample.hdf5")
 dates = keys(data)
 d = first(dates)
-signals = TurbulenceFlux.to_dict(data[d]["Signals"])
-# bad variable naming in data_sample.jld2
-signals[:PA] = signals[:P]
-signals[:TA] = signals[:T]
-signals[:TIMESTAMP] = signals[:Date]
-pop!(signals,:P)
-pop!(signals,:T)
-pop!(signals,:Date)
-work_dim = length(signals[:TA])
+signals = data[d]["Signals"]
+signals = Dict(Symbol(k)=>signals[k] for k in keys(signals))
+
+## Parameters Definition
+work_dim = length(signals[:W])
 fs = 20 #Hz
 z_d = 10 #m
 aux = AuxVars(;fs,z_d)
 cp = CorrectionParams()
 # Wavelet Parameters
+wave_dim = 10*60*60*fs # max wavelet duration of 10 hours
 b=1
 g=3
 J = floor(Int, log2(work_dim)) 
-Q = 4
-wmin = 4*pi/work_dim
-wmax = pi
-wave_dim = work_dim
+Q = 2
+wmin = 2pi * (1.2*fs/wave_dim)/fs # The lowest fourier frequency is fs/wave_dim
+wmax = 2pi * (fs/2)/fs
 sp = ScaleParams(b,g,J,Q,wmin,wmax,wave_dim)
+
 # Time-Averaging Parameters
-kernel_dim = work_dim
+kernel_dim = 10*60*60*fs # Max averaging length of 10 hours
 kernel_type = :gaussian
 kernel_params = [30*20*fs] # 30 min averaging time
-tp = TimeParams(kernel_dim,kernel_type,kernel_params)
-dp = DecompParams(sp,tp,work_dim)
+dt=fs*60 # 1minute time sampling
+tp = TimeParams(kernel_dim,kernel_type,kernel_params;dt)
+dp = DecompParams(sp,tp)
+# Using the same Time-Averaging parameters for auxilliary variables ( V_SIGMA,W_SIGMA,USTAR,RHO, etc...)
 tp_aux = tp
+
+# Method Parameters
 method=TurbuLaplacian(;tr_tau = 1e-3,tr_dtau=1,dp,tp_aux)
 
+# Estimation
 results = estimate_flux(signals,aux,cp,method)
-
-
-# Defining time decomposition parameters
-dt = 60 * fs # 1min time sampling corresponding to a 1min time flux
-kernel_dim = work_dim
-σ = 10 * 60 * fs / kernel_dim # 10min averaging length
-
-# Gaussian averaging kernel
-kernel_dim = work_dim # max time support
-time_params = (
-    kernel_type = :gaussian, # Gaussian type kernel
-    kernel_dim,
-    kernel_params = [30 * dt / kernel_dim], # Ratio of max time support.
-    Δt = dt,       # 1min time sampling
-)
-
-# Defining scale decomposition parameters
-wave_dim = work_dim
-scale_params = (
-    β = 2, # First wavelet shape parameter
-    γ = 3, # Second wavelet shape parameter
-    J = floor(Int, log2(wave_dim)), # Number of octaves
-    Q = 4, # Number of inter-octaves
-    fmin = 2 * fs / (wave_dim), # Minimum frequency peak
-    fmax = fs / 2, # Maximum Frequency peak
-    fs = fs,
-    wave_dim, # max time support
-)
-
-# Prepare density and mean wind amplitude
-# (for simplicity here using the previous time-decomposition)
-mean_wind = compute_wind_amplitude([u v w], time_params)
-density = compute_density(P, T, time_params)
-
-# time-frequency decomposition of CO2 flux
-time_sampling, (freq_peak, sigmat), decomp_FC =
-    timescale_flux_decomp(w, C, time_params, scale_params, with_info = true)
-decomp_FC = decomp_FC .* density # Convert to flux units
-
-# Computation of the amplitude of Reynold's tensor vertical component τ_w
-_, _, tauw = amplitude_reynolds_w(u, v, w, time_params, scale_params)
-
-# time and normalized frequency coordinates
-to_eta(i, j) = log10((ref_dist * freq_peak[j]) / mean_wind[i]) # ∼ log(ref_dist/eddy_dim)
-S = (length(time_sampling), length(freq_peak)) # Dimension
-CI = CartesianIndices(S)
-time_h = (0:(work_dim-1)) / (fs * 3600)
-t = map(c -> time_h[time_sampling[c[1]]], CI) # get the time values
-eta = map(c -> to_eta(c[1], c[2]), CI)
-
-# Turbulence extraction based on the laplacian of log(τ_w)
-(masks, deltatau, itp) = turbu_extract_laplacian(t, eta, log10.(tauw), δ_Δτ = 1, δ_τ = 1e-3)
-
-# Scale integration of the flux given the turbulence mask
-FC = time_integrate_flux(decomp_FC, masks.turbulence)
 
 cmap_flux = Makie.Reverse(:bam)
 cmap_tau = Makie.Reverse(:roma)
@@ -133,10 +81,18 @@ function plot_contour_line(args...; kwargs...)
     return g, ax, ax_line
 end
 
-h(d) = d[:, 1:end-1]
+#
+tauw = results.estimate.TAUW_TF
+dtauw =results.estimate.DTAUW_TF
+FC =results.estimate.FC
+FC_TF  =results.estimate.FC_TF
+tauw_m = results.estimate.TAUW_TF_M
+
+h(d) = d[:, 1:end-1] # Removal of lowest frequency band (mean)
+eta = log10.(results.estimate.ETA) # Time-varying normalized frequency
 etaref = h(eta)[div(size(eta, 1), 2), :]
-tref = t[:, 1]
-fig = Figure(size = (1000, 800))
+tref=(0:dt:(work_dim-1) ) * 1/fs / (60*60)
+fig = Figure(size = (1000, 800));
 g1 = GridLayout(fig[1, 1])
 g2 = GridLayout(fig[2, 1])
 g3 = GridLayout(fig[1:2, 2])
@@ -146,7 +102,7 @@ g1, ax1 = plot_contour(
     tref,
     etaref,
     h(tauw);
-    mask = h(masks.turbulence),
+     mask = h(tauw_m),
     g = g1,
     xlabel,
     ylabel,
@@ -155,7 +111,7 @@ g1, ax1 = plot_contour(
 g2, ax2 = plot_contour(
     tref,
     etaref,
-    h(deltatau);
+    h(dtauw);
     g = g2,
     xlabel,
     ylabel,
@@ -164,8 +120,8 @@ g2, ax2 = plot_contour(
 g3, ax3, ax_line = plot_contour_line(
     tref,
     etaref,
-    h(decomp_FC);
-    mask = h(masks.turbulence),
+    h(FC_TF);
+     mask = h(tauw_m),
     g = g3,
     xlabel,
     ylabel,
@@ -174,4 +130,3 @@ g3, ax3, ax_line = plot_contour_line(
 )
 lines!(ax_line, tref, FC)
 linkxaxes!(ax1, ax2, ax3, ax_line)
-

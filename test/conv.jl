@@ -200,7 +200,6 @@ end
             kernel_dim,
             kernel_type,
             kernel_params,
-            work_dim,
         )
         gmw = GMWFrame(dp)
         avg_kernel = averaging_kernel(dp)

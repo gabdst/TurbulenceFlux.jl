@@ -143,17 +143,58 @@ Output of `estimate_flux` with the following fields:
     qc::QualityControl
     cp::CorrectionParams
     method::T
+    units::NamedTuple=NamedTuple(k=>output_variables[k] for k in intersect(keys(estimate),keys(output_variables)))
+end
+
+
+function Base.show(io::IO,e::FluxEstimate{T}) where {T<:FluxEstimationMethod}
+    print(io,"Flux Estimation Results with method $(T)\n")
+    S = string.(collect(keys(e.estimate)))
+    filter!(!endswith("_QC"),S)
+    if T <: Union{TurbuThreshold,TurbuLaplacian}
+    print(io,"\nTime-Frequency variables: ")
+    for s in S
+        ss = Symbol(s)
+        if !endswith(s,"_TF")
+            continue
+        end
+        print(io,s)
+        if ss in keys(output_variables)
+            unit = output_variables[ss]
+            print(io, " ($unit)")
+        end
+        print(io, ", ")
+    end
+    if "ETA" in S
+        print(io, "\nNormalized Frequency: ETA")
+    end
+    end
+    print(io,"\nTime variables: ")
+    for s in S
+        ss = Symbol(s)
+        if endswith(s,"_TF")
+            continue
+        end
+        print(io,s)
+        if ss in keys(output_variables)
+            unit = output_variables[ss]
+            if unit != NoUnits
+                print(io, " ($unit)")
+            end
+        end
+        print(io,", ")
+    end
+    print(io,"\nQuality Control variables are ending with _QC")
 end
 
 function tofluxunits(F::AbstractArray, density::AbstractVector, fluxtype::Symbol)
-    if fluxtype == :H
+    if fluxtype in (:H,:H_TF)
         F = F .* density * C_p #W/m2
-    elseif fluxtype == :LE
+    elseif fluxtype in (:LE,:LE_TF)
         F = F .* density * LAMBDA #W/m2
-    elseif fluxtype == :FC
+    elseif fluxtype in (:FC,:FC_TF)
         F = F .* density # umol/m2/s
-    elseif fluxtype == :TAUW
-    elseif fluxtype == :TAU
+    elseif fluxtype in (:TAUW,:TAUW_TF)
     end
     return F
 end
@@ -181,9 +222,9 @@ function sigmas_wind(wind_speeds, tp::TimeParams)
     up = u - average(u, tp, subsampling)
     vp = v - average(v, tp, subsampling)
     wp = w - average(w, tp, subsampling)
-    U_SIGMA = sqrt.(average(up .^ 2, tp))
-    V_SIGMA = sqrt.(average(vp .^ 2, tp))
-    W_SIGMA = sqrt.(average(wp .^ 2, tp))
+    U_SIGMA = sqrtz.(average(up .^ 2, tp))
+    V_SIGMA = sqrtz.(average(vp .^ 2, tp))
+    W_SIGMA = sqrtz.(average(wp .^ 2, tp))
     return U_SIGMA, V_SIGMA, W_SIGMA
 end
 
@@ -344,26 +385,27 @@ function turbulence_mask(
     g = MyGraph(adj_mat, weights_mat)
     L = laplacian_matrix(g)
     dtau = reshape(L * ltauw_v, S) # the laplacian is zero where mask is false
-    τ_mapped = reshape(ltauw_v, S)
+    ltauw_v= reshape(ltauw_v, S)
 
     detected = reshape(dtau .> tr_dtau, S) # Look at (t,eta) points with important minimas
     if !isnothing(mask_error)
         detected[mask_error] .= false # remove points with convolution errors
     end
-    detected[(eta.>0)] .= false # remove points above eta = 0
-    ts = collect(Iterators.flatten((t[view(detected,:,i)] for i in 1:size(detected,2))))
+    detected[(eta.>1)] .= false # remove points above eta = 0
 
     if count(detected) == 0
-        sg = eta[end,:]
-    mask_advec =  mask # Get the mask removing the advection + removing the mean value
+        sg = eta[:, end]
+        mask_advec = mask # Get the mask removing the advection + removing the mean value
     else
-    #itp = _interpolate_eta(t[detected[:]], eta[detected[:]], λ,d) # Old way: Bspline interpolation + smoothness regularization to get interpolated value at each time t, extrapolate with constant values on the borders
-    itp = _locally_weighted_regression(t[detected], eta[detected], span)
-    sg = itp.(t) #Time-Varying spectral gap
-    mask_advec = (sg .> eta) .&& mask # Get the mask removing the advection + removing the mean value
+        #itp = _interpolate_eta(t[detected[:]], eta[detected[:]], λ,d) # Old way: Bspline interpolation + smoothness regularization to get interpolated value at each time t, extrapolate with constant values on the borders
+        # 
+        ts = collect(Iterators.flatten((t[view(detected, :, i)] for i = 1:size(detected, 2))))
+        itp = _locally_weighted_regression(ts, eta[detected], span)
+        sg = itp.(t) #Time-Varying spectral gap
+        mask_advec = (eta .> sg) .&& mask # Get the mask removing the advection + removing the mean value
     end
 
-    mask_lowcoeff = (log10(tr_tau) .> τ_mapped) .&& mask_advec
+    mask_lowcoeff = (ltauw_v .> log10(tr_tau)) .&& mask_advec
     return (;
         TAUW_TF_M = mask_lowcoeff,
         SG = sg,
@@ -447,11 +489,17 @@ function estimate_flux(
     method::ReynoldsEstimation,
 )
     (; tp, tp_aux) = method
+    tp.dt == tp_aux.dt || throw(
+        error(
+            "Different time sampling given: tp.dt = $(tp.dt) against tp_aux.dt = $(tp_aux.dt)",
+        ),
+    )
+    (; dt) = tp
     df = deepcopy(df)
     check_variables(df)
     var_names = get_var_names(df)
     work_dim = length(df[:TIMESTAMP])
-    time_sampling = 1:tp.dt:work_dim
+    time_sampling = 1:dt:work_dim
     estimate = Dict() # Prepare Output
     estimate[:TIMESTAMP] = df[:TIMESTAMP][time_sampling]
     df, qc = apply_correction!(df, cp, aux)
@@ -461,32 +509,22 @@ function estimate_flux(
     turbuvar = estimate_turbuvar(df, tp, qc)
     merge!(estimate, turbuvar)
 
-    subsampling = false
-
-    wp = df[:W] - average(df[:W], tp, subsampling)
-
-    tap = df[:TA] - average(df[:TA], tp, subsampling)
-    H = average(tap .* wp, tp)
-    H = tofluxunits(H, estimate[:RHO], :H)
-    update_quality_control!(qc, :H, error_mask(tp, qc[:TA] .|| qc[:W]) .|| qc[:RHO])
-    estimate[:H] = H
-
+    C = Dict((:W, :TA) => :H)
     if :CO2 in var_names
-        g = df[:CO2]
-        gp = g - average(g, tp, subsampling)
-        FC = average(gp .* wp, tp)
-        FC = tofluxunits(FC, estimate[:RHO], :FC)
-        update_quality_control!(qc, :FC, error_mask(tp, qc[:CO2] .|| qc[:W]) .|| qc[:RHO])
-        estimate[:FC] = FC
+        C[(:W, :CO2)] = :FC
     end
-
     if :H2O in var_names
-        g = df[:H2O]
-        gp = g - average(g, tp, subsampling)
-        LE = average(gp .* wp, tp)
-        LE = tofluxunits(LE, estimate[:RHO], :LE)
-        update_quality_control!(qc, :LE, error_mask(tp, qc[:H2O] .|| qc[:W]) .|| qc[:RHO])
-        estimate[:LE] = LE
+        C[(:W, :H2O)] = :LE
+    end
+    L = Dict(k => df[k] for k in unique(Iterators.flatten(collect(keys(C)))))
+    cross_co = cross_correlation_rey(L, C, tp)
+    for v in keys(cross_co)
+        cross_co[v] = tofluxunits(cross_co[v], estimate[:RHO], v)
+    end
+    merge!(estimate, cross_co)
+    for (c, v) in C
+        n, m = c
+        update_quality_control!(qc, v, error_mask(tp, qc[n] .|| qc[m]) .|| qc[:RHO])
     end
     estimate = to_nt(merge_qc!(estimate, qc))
     return FluxEstimate(; estimate, qc, cp, method)
@@ -506,7 +544,7 @@ function estimate_flux(
     work_dim = length(df[:TIMESTAMP])
     dp.tp.dt == tp_aux.dt || throw(
         error(
-            "Different time sampling given: $(dp.tp.dt) against tp_aux.dt = $(tp_aux.dt)",
+            "Different time sampling given: tp.dt = $(dp.tp.dt) against tp_aux.dt = $(tp_aux.dt)",
         ),
     )
     time_sampling = 1:tp_aux.dt:work_dim
@@ -518,7 +556,7 @@ function estimate_flux(
     turbuvar = estimate_turbuvar(df, tp, qc)
     merge!(estimate, turbuvar)
 
-    C = Dict((:W, :W) => :WW_TF, (:U, :W) => :UW_TF, (:V, :W) => :VW_TF, (:W, :TA) => :H_TF)
+    C = Dict((:W, :W) => :WW_TF, (:W, :U) => :UW_TF, (:W, :V) => :VW_TF, (:W, :TA) => :H_TF)
     if :CO2 in var_names
         C[(:W, :CO2)] = :FC_TF
     end
@@ -531,8 +569,7 @@ function estimate_flux(
     for c in keys(scalo)
         scalo[c] = tofluxunits(scalo[c], estimate[:RHO], c)
     end
-    merge!(estimate, scalo)
-    estimate[:TAUW_TF] = _tauw(scalo[:WW_TF], scalo[:UW_TF], scalo[:VW_TF])
+    scalo[:TAUW_TF] = _tauw(scalo[:WW_TF], scalo[:UW_TF], scalo[:VW_TF])
 
     # Quality Control via error propagation
     L_qc = Dict{Symbol,Array{Bool}}()
@@ -558,13 +595,14 @@ function estimate_flux(
     qc[:TAUW_TF_QC] = qc[:WW_TF_QC] .|| qc[:UW_TF_QC] .|| qc[:VW_TF_QC]
 
     if method isa TurbuLaplacian
-        tm = turbulence_mask(estimate[:TAUW_TF], estimate[:WS], aux, method, qc[:TAUW_TF_QC])
+        tm =
+            turbulence_mask(scalo[:TAUW_TF], estimate[:WS], aux, method)
         estimate[:SG] = tm.SG
         estimate[:DTAUW_TF] = tm.DTAUW_TF
         estimate[:TAUW_TF_M] = tm.TAUW_TF_M
         estimate[:TAUW_TF_MADVEC] = tm.TAUW_TF_MADVEC
     elseif method isa TurbuThreshold
-        tm = turbulence_mask(scalo[:TAUW], method)
+        tm = turbulence_mask(scalo[:TAUW_TF], method)
         estimate[:TAUW_TF_M] = tm.TAUW_TF_M
     end
     if method.sensitivity
@@ -581,12 +619,20 @@ function estimate_flux(
         end
         merge!(scalo, dp_scalo, dt_scalo)
     end
+    merge!(estimate, scalo)
     # Scale Integral
     for c in values(C)
-        estimate[c] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
-        mask = sparse(flux_scale_integral(qc[Symbol(c,:_QC)], estimate[:TAUW_TF_M]))
         var = Symbol(split(string(c), "_TF")[1])
+        estimate[var] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
+        mask = sparse(flux_scale_integral(qc[Symbol(c, :_QC)], estimate[:TAUW_TF_M]).>1e-6)
         update_quality_control!(qc, var, mask)
+    end
+    estimate[:TAUW] = flux_scale_integral(scalo[:TAUW_TF],estimate[:TAUW_TF_M])
+    mask = sparse(flux_scale_integral(qc[:TAUW_TF_QC], estimate[:TAUW_TF_M]).>1e-6)
+    update_quality_control!(qc, :TAUW, mask)
+    for c in union(values(C_dp),values(C_dt))
+        var = Symbol(split(string(c), "_TF")[1])
+        estimate[var] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
     end
     freq_peaks = frequency_peaks(dp)
     estimate[:ETA] = normalized_frequency(freq_peaks, estimate[:WS], aux.z_d)

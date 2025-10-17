@@ -8,6 +8,8 @@ function to_dict(x)
     Dict(k => x[:, k] for k in propertynames(x))
 end
 
+sqrtz(x) = isapprox(x,0.0,atol=1e-10) ? 0 : sqrt(x)
+
 function running_func(x::AbstractArray{<:Real}, n::Integer, f; step = 1)
     N = length(x)
     S = 1:step:N

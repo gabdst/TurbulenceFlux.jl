@@ -356,7 +356,7 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
     if !(:TA in var_names)
         # T_SONIC should be present
         # For now we overwrite TA with T_SONIC
-        df[:TA] = df[!, :T_SONIC]
+        df[:TA] = df[:T_SONIC]
         qc[:TA] = copy(qc[:T_SONIC])
     end
     df[:TA] .+= 273.15 # Conversion to K

@@ -29,9 +29,9 @@ function CConv(
 ) where {T<:Union{Float64,ComplexF64}}
     conv_dim = (input_dim + padding)
     # Setting up internals in keywords 
-    buff_in = Vector{ComplexF64}(undef, conv_dim)
+    buff_in = zeros(ComplexF64,conv_dim)
     pfft_in = plan_fft!(buff_in)
-    buff_ker = Vector{ComplexF64}(undef, conv_dim)
+    buff_ker = zeros(ComplexF64,conv_dim)
     pfft_ker = plan_fft!(buff_ker)
     pifft_in = plan_ifft!(buff_in)
     output_dim = crop_range[2] - crop_range[1] + 1
@@ -123,7 +123,6 @@ mutable struct ScaleParams
     const wmin::Real
     const wmax::Real
     const wave_dim::Int
-    const work_dim::Int
     const analytic::Bool
     const padding::Int
     frame::Ref{GMWFrame}
@@ -137,7 +136,6 @@ ScaleParams(
     wmin,
     wmax,
     wave_dim;
-    work_dim = wave_dim,
     analytic = false,
     padding = 0,
 ) = ScaleParams(
@@ -148,7 +146,6 @@ ScaleParams(
     wmin,
     wmax,
     wave_dim,
-    work_dim,
     analytic,
     padding,
     Ref{GMWFrame}(),
@@ -158,7 +155,6 @@ struct TimeParams
     kernel_dim::Int
     kernel_type::Symbol
     kernel_params::AbstractArray{<:Real}
-    work_dim::Int
     dt::Int
     padding::Int
 end
@@ -167,15 +163,13 @@ TimeParams(
     kernel_dim::Int,
     kernel_type::Symbol,
     kernel_params::AbstractArray{<:Real};
-    work_dim::Int = kernel_dim,
     dt::Int = 1,
     padding::Int = 0,
-) = TimeParams(kernel_dim, kernel_type, kernel_params, work_dim, dt, padding)
+) = TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
 
 struct DecompParams
     sp::ScaleParams
     tp::TimeParams
-    work_dim::Int
 end
 
 ScaleParams(dp::DecompParams) = dp.sp
@@ -192,15 +186,13 @@ function DecompParams(;
     kernel_dim::Int,
     kernel_type::Symbol,
     kernel_params::AbstractArray{<:Real},
-    work_dim::Int,
     dt::Int = 1,
     analytic::Bool = false,
-    padding::Union{Symbol,Int} = :next2pow,
+    padding::Int = 0,
 )
-    padding = padding == :next2pow ? next2pow_padding(work_dim, 0) : padding
-    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim; work_dim, analytic, padding)
-    tp = TimeParams(kernel_dim, kernel_type, kernel_params; work_dim, dt, padding)
-    return DecompParams(sp, tp, work_dim)
+    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim; analytic, padding)
+    tp = TimeParams(kernel_dim, kernel_type, kernel_params; dt, padding)
+    return DecompParams(sp, tp)
 end
 
 function wavelet_parameters(b, g, J, Q, wmin, wmax)
@@ -212,7 +204,8 @@ wavelet_parameters(sp::ScaleParams) =
 wavelet_parameters(dp::DecompParams) = wavelet_parameters(ScaleParams(dp.sp))
 
 frequency_peaks(dp::DecompParams) = frequency_peaks(ScaleParams(dp))
-frequency_peaks(sp::ScaleParams) = vcat(map(p -> GMW.peak_n(p, 1), wavelet_parameters(sp)),0.0)
+frequency_peaks(sp::ScaleParams) =
+    vcat(map(p -> GMW.peak_n(p, 1), wavelet_parameters(sp)), 0.0)
 
 _gauss(t, p) = exp(-0.5 * (t / p) .^ 2)
 _dtgauss(t, p) = -(t / p^2) * _gauss(t, p)
@@ -418,6 +411,15 @@ function GMWFrame(
     return GMWFrame(N, params, frame, freq_peaks, sigmas, selfdual, analytic)
 end
 
+function make_mem(C)
+    ckf = collect(Iterators.flatten(keys(C)))
+    ccount = map(k->(k,count(==(k),ckf)),unique(ckf))
+    filter!(x->x[2]>1,ccount)
+    mem = Dict{Symbol,Any}((k=>nothing for (k,v) in ccount))
+end
+
+in_mem(mem,k) = k in keys(mem) && !isnothing(mem[k])
+store!(mem,k,v) = k in keys(mem) && isnothing(mem[k]) ? mem[k] = v : nothing
 
 function cross_scalogram(
     L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
@@ -425,15 +427,17 @@ function cross_scalogram(
     dp::DecompParams,
     frame::Union{AbstractArray{<:AbstractArray{T}},GMWFrame},
     avg_kernel::Union{AbstractVector{<:Real},AbstractVector{<:AbstractVector{<:Real}}},
+    K = 2,
 ) where {T<:Union{Real,Complex}}
 
-    (; work_dim, tp, sp) = dp
+    (; tp, sp) = dp
     (; dt) = tp
-    (; padding, analytic) = sp
+    (; analytic) = sp
+    pad_tp = tp.padding
+    pad_sp = sp.padding
     allequal(length, values(L)) || throw(error("Wrong size"))
     frame = frame isa GMWFrame ? frame.frame : frame
-    work_dim == length(first(values(L))) ||
-        throw(error("work_dim miss specified in DecompParams struct"))
+    work_dim = length(first(values(L)))
     time_sampling = 1:dt:work_dim
     if avg_kernel isa Vector{Float64}
         many_kernels = false
@@ -444,25 +448,27 @@ function cross_scalogram(
     end
     return_type = analytic ? ComplexF64 : Float64
 
-    WaveC = CConv(return_type, work_dim; padding)
-    KernelC = CConv(return_type, work_dim; padding)
+    WaveC = CConv(return_type, work_dim; padding=pad_sp)
+    KernelC = CConv(return_type, work_dim; padding = pad_tp)
 
     out = Dict(c => Dict() for c in keys(C))
-    for (i, gmw) in enumerate(frame)
-        mem = Dict()
-        avg_kernel = many_kernels ? avg_kernel[i] : avg_kernel
-        load_kernel = true
-        for c in keys(C)
-            (n, m) = c
-            x = L[n]
-            y = L[m]
-            x_i = n in keys(mem) ? mem[n] : mem[n] = WaveC(x, gmw; load_kernel)
-            y_i = m in keys(mem) ? mem[m] : mem[m] = WaveC(y, gmw; load_kernel)
-            f = KernelC(x_i .* y_i, avg_kernel; load_kernel)
-            f = f[time_sampling]
-            out[c][i] = f
-            if load_kernel
-                load_kernel = false
+    for C_p in Iterators.partition(C, K)
+        for (i, gmw) in enumerate(frame)
+            mem = make_mem(C_p)
+            avgk = many_kernels ? avg_kernel[i] : avg_kernel
+            load_kernel = true
+            for (c, _) in C_p
+                (n, m) = c
+                x = L[n]
+                y = L[m]
+                x_i = in_mem(mem,n) ? mem[n] : WaveC(x,gmw;load_kernel)
+                store!(mem,n,x_i)
+                y_i = in_mem(mem,m) ? mem[m] : WaveC(y,gmw;load_kernel)
+                store!(mem,m,y_i)
+                f = KernelC(x_i .* y_i, avgk; load_kernel)
+                f = f[time_sampling]
+                out[c][i] = f
+                load_kernel=false
             end
         end
     end
@@ -502,6 +508,35 @@ dp_cross_scalogram(
 ) = cross_scalogram(L, C, dp, GMWFrame(dp), dp_averaging_kernel(dp))
 dp_cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...) =
     dp_cross_scalogram(_xy_dict(x, y)..., args...)[:xy]
+
+
+function cross_correlation_rey(
+    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
+    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
+    tp::TimeParams,
+)
+    (; dt, padding) = tp
+    allequal(length, L) || throw(error("Wrong size"))
+    work_dim = length(first(values(L)))
+    time_sampling = 1:dt:work_dim
+    KernelC = CConv(Float64, work_dim; padding)
+    avg_kernel = averaging_kernel(tp)
+    out = Dict()
+    load_kernel = true
+    mem = make_mem(C) 
+    for c in keys(C)
+        (n, m) = c
+        x = L[n]
+        y = L[m]
+        x_p = in_mem(mem,n) ? mem[n] : x - KernelC(x,avg_kernel;load_kernel)
+        store!(mem,n,x_p)
+        load_kernel = false
+        y_p = in_mem(mem,m) ? mem[m] : y - KernelC(y,avg_kernel;load_kernel)
+        store!(mem,m,y_p)
+        out[C[c]] = KernelC(x_p .* y_p, avg_kernel; load_kernel)[time_sampling]
+    end
+    return out
+end
 
 
 average(x::AbstractArray{<:Real}, tp::TimeParams, subsampling::Bool = true) =
