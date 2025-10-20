@@ -1,6 +1,6 @@
 using TurbulenceFlux
 
-work_dim = 24*60*60*20
+work_dim = 8192
 fs = 20
 z_d = 10.0
 aux = AuxVars(; fs, z_d)
@@ -24,7 +24,7 @@ df[:PA] = ones(work_dim) * TurbulenceFlux.R / 1000
 df[:CO2] = x
 df[:H2O] = x / TurbulenceFlux.LAMBDA
 
-dt=20*60
+dt=1
 tp = TimeParams(kernel_dim, kernel_type, kernel_params; padding = kernel_dim,dt)
 tp_aux = tp
 
@@ -48,16 +48,16 @@ results = estimate_flux(; df, aux, cp, method)
     rtol = 0.05,
 )
 
-wave_dim=work_dim/4
+wave_dim=work_dim
 b=1
 g=3
 J=floor(Int,log2(wave_dim))
 Q=2
-wmin=4pi/work_dim
+wmin=4pi/wave_dim
 wmax=pi
 sp = ScaleParams(b,g,J,Q,wmin,wmax,wave_dim)
 
-dt=20*60
+dt=1
 tp = TimeParams(kernel_dim, kernel_type, kernel_params; padding = kernel_dim,dt)
 tp_aux = tp
 

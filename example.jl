@@ -8,24 +8,26 @@ using DataFrames
 using CairoMakie
 using Statistics
 
-## DATA
+## Data Loading
 # Some data available at https://drive.proton.me/urls/0NHRADNYTC#5q9CLk4V0sbA
 data = jldopen("data_sample.hdf5")
 dates = keys(data)
 d = first(dates)
 signals = data[d]["Signals"]
+# Converting to Dictionnary
 signals = Dict(Symbol(k)=>signals[k] for k in keys(signals))
 
 ## Parameters Definition
 work_dim = length(signals[:W])
-fs = 20 #Hz
-z_d = 10 #m
+# Auxilliaryi variables
+fs = 20 # Hz, sampling frequency
+z_d = 10  # m, displacement height
 aux = AuxVars(;fs,z_d)
 cp = CorrectionParams()
 # Wavelet Parameters
 wave_dim = 10*60*60*fs # max wavelet duration of 10 hours
-b=1
-g=3
+b = 1
+g = 3
 J = floor(Int, log2(work_dim)) 
 Q = 2
 wmin = 2pi * (1.2*fs/wave_dim)/fs # The lowest fourier frequency is fs/wave_dim
@@ -39,11 +41,11 @@ kernel_params = [30*20*fs] # 30 min averaging time
 dt=fs*60 # 1minute time sampling
 tp = TimeParams(kernel_dim,kernel_type,kernel_params;dt)
 dp = DecompParams(sp,tp)
-# Using the same Time-Averaging parameters for auxilliary variables ( V_SIGMA,W_SIGMA,USTAR,RHO, etc...)
+# Using the same Time-Averaging parameters for auxilliary estimates ( V_SIGMA,W_SIGMA,USTAR,RHO, etc...)
 tp_aux = tp
 
 # Method Parameters
-method=TurbuLaplacian(;tr_tau = 1e-3,tr_dtau=1,dp,tp_aux)
+method = TurbuLaplacian(;tr_tau = 1e-3,tr_dtau=1,dp,tp_aux)
 
 # Estimation
 results = estimate_flux(signals,aux,cp,method)
@@ -83,21 +85,21 @@ end
 
 #
 tauw = results.estimate.TAUW_TF
-dtauw =results.estimate.DTAUW_TF
-FC =results.estimate.FC
-FC_TF  =results.estimate.FC_TF
+dtauw = results.estimate.DTAUW_TF
+FC = results.estimate.FC
+FC_TF  = results.estimate.FC_TF
 tauw_m = results.estimate.TAUW_TF_M
 
 h(d) = d[:, 1:end-1] # Removal of lowest frequency band (mean)
 eta = log10.(results.estimate.ETA) # Time-varying normalized frequency
-etaref = h(eta)[div(size(eta, 1), 2), :]
-tref=(0:dt:(work_dim-1) ) * 1/fs / (60*60)
-fig = Figure(size = (1000, 800));
+etaref = h(eta)[div(size(eta, 1), 2), :] # Normalized frequency estimated at noon
+tref = (0:dt:(work_dim-1) ) * 1/fs / (60*60)
+fig = Figure(size = (1000, 600));
 g1 = GridLayout(fig[1, 1])
 g2 = GridLayout(fig[2, 1])
 g3 = GridLayout(fig[1:2, 2])
 xlabel = "Time [h]"
-ylabel = L"\eta"
+ylabel = L"\log_{\mathrm{10}}\, \eta"
 g1, ax1 = plot_contour(
     tref,
     etaref,
@@ -130,3 +132,4 @@ g3, ax3, ax_line = plot_contour_line(
 )
 lines!(ax_line, tref, FC)
 linkxaxes!(ax1, ax2, ax3, ax_line)
+fig
