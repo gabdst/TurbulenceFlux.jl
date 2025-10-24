@@ -1,81 +1,67 @@
 # TurbulenceFlux.jl  [![DOI](https://zenodo.org/badge/733581341.svg)](https://doi.org/10.5281/zenodo.15310755)
 
-[![Project Status: WIP – Initial development is in progress, but there has not yet been a stable, usable release suitable for the public.](https://www.repostatus.org/badges/latest/wip.svg)](https://www.repostatus.org/#wip)
+[![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 
-TurbulenceFlux.jl is a Julia package designed for high-resolution turbulence analysis and flux estimation using flux tower measurements of wind speeds and concentrations. This package is currently in its alpha stage, meaning it is under active development and significant modifications are expected.
 
-## Important Notice
-
-As an alpha release, this package may contain bugs, lack features, and undergo substantial changes in its API and functionality. We welcome feedback and contributions to help improve and stabilize the package.
+TurbulenceFlux.jl is a Julia package for high‑resolution, fixed‑point turbulence analysis and flux estimation. Although originally developed for flux‑tower measurements above forest ecosystems, the package can be applied to any similar context. Development is ongoing, and new estimation methods will be added, but the core features have been implemented.
 
 ## Usage
 
-Below is a quick usage guide to get you started. For a practical example, please see `example.jl`, which applies the method to available data samples and generates visuals.
+See the detailed example in `example.jl`, it also includes a link to download the data samples. Below is a brief overview of the package’s structure and functionality. Most functions and types have extensive documentation accessible from the REPL via help mode (e.g., `?estimate_flux`).
 
-```julia
-# Assuming u, v, w are the three wind speed components (m/s),
-# P (Pa) and T (K) are pressure and temperature signals,
-# C (umol/mol) is the CO2 concentration
+### Main entry point
 
-work_dim = length(u) # size of signals (24h)
-fs = 20 # Sampling frequency
-ref_dist = 10 # Distance of reference (m), e.g., tower flux height - displacement height
-
-# Defining time decomposition parameters
-dt = 60 * fs # 1min time sampling corresponding to a 1min time flux
-kernel_dim = work_dim
-σ = 10 * 60 * fs / kernel_dim # 10min averaging length
-
-# Gaussian averaging kernel
-kernel_dim = work_dim # max time support
-time_params = (
-    kernel_type = :gaussian, # Gaussian type kernel
-    kernel_dim,
-    kernel_params = [30 * dt / kernel_dim], # Ratio of max time support.
-    Δt = dt,       # 1min time sampling
-)
-
-# Defining scale decomposition parameters
-wave_dim = work_dim
-scale_params = (
-    β = 2, # First wavelet shape parameter
-    γ = 3, # Second wavelet shape parameter
-    J = floor(Int, log2(wave_dim)), # Number of octaves
-    Q = 4, # Number of inter-octaves
-    fmin = 2 * fs / (wave_dim), # Minimum frequency peak
-    fmax = fs / 2, # Maximum Frequency peak
-    fs = fs,
-    wave_dim, # max time support
-)
-
-# Prepare density and mean wind amplitude
-# (for simplicity here using the previous time-decomposition)
-mean_wind = compute_wind_amplitude([u v w], time_params)
-density = compute_density(P, T, time_params)
-
-# time-frequency decomposition of CO2 flux
-time_sampling, (freq_peak, sigmat), decomp_FC =
-    timescale_flux_decomp(w, C, time_params, scale_params, with_info = true)
-decomp_FC = decomp_FC .* density # Convert to flux units
-
-# Computation of the amplitude of Reynold's tensor vertical component τ_w
-_, _, tauw = amplitude_reynolds_w(u, v, w, time_params, scale_params)
-
-# time and normalized frequency coordinates
-to_eta(i, j) = log10((ref_dist * freq_peak[j]) / mean_wind[i]) # ∼ log(ref_dist/eddy_dim)
-S = (length(time_sampling), length(freq_peak)) # Dimension
-CI = CartesianIndices(S)
-time_h = (0:(work_dim-1)) / (fs * 3600)
-t = map(c -> time_h[time_sampling[c[1]]], CI) # get the time values
-eta = map(c -> to_eta(c[1], c[2]), CI)
-
-# Turbulence extraction based on the laplacian of log(τ_w)
-(masks, deltatau, itp) = turbu_extract_laplacian(t, eta, log10.(tauw), δ_Δτ = 1, δ_τ = 1e-3)
-
-# Scale integration of the flux given the turbulence mask
-FC = time_integrate_flux(decomp_FC, masks.turbulence) 
+The function `estimate_flux` is the main entry point and is intended for operational flux estimation.
 ```
+function estimate_flux(
+    df::Dict,
+    aux::AuxVars,
+    cp::CorrectionParams,
+    method::FluxEstimationMethod,
+)
+```
+It expects:
+ - `df`: dictionnary containing the input signals (mandatory variables plus some optional gas variables)
+ - `aux`: auxilliary variables  needed for the calculation
+ - `cp`: correction parameters
+ - `method`: the flux-estimation method to apply
+
+For the naming convention used please check `mandatory_variables` and `gas_variables` constants.
+
+It returns a `FluxEstimate` object:
+```
+struct FluxEstimate{T<:FluxEstimationMethod}
+    estimate::NamedTuple
+    qc::QualityControl
+    cp::CorrectionParams
+    method::T
+    units::NamedTuple
+end
+```
+, which holds the estimated fluxes, quality-control information, updated correction parameters, and metadata (method settings and units).
+
+### Estimation Methods
+
+Currently, three different estimation methods (`method::FluxEstimationMethod`) are available:
+- `ReynoldsEstimation`: Standard eddy‑covariance method using Reynolds decomposition
+- `TurbuThreshold`: Local turbulent transport extraction via wavelet analysis and thresholding of the Reynolds stress tensor
+- `TurbuLaplacian`: Similar to TurbuThreshold but with Laplacian analysis of the Reynolds stress tensor
+
+Each method provides a specific set of outputs. See `?TurbuThreshold` for example.
+
+Standard inputs and outputs follow the FLUXNET variable naming convention.
+
+### Parameter structures
+
+ - `TimeParams`: controls temporal averaging and subsampling. Used by all methods; for `ReynoldsEstimation` it defines the two frequency bands (mean vs. variable).
+ - `ScaleParams`: configures the wavelet‑based approaches (`TurbuThreshold` and `TurbuLaplacian`), by specifying the number of frequency bands (wavelet basis size) and the wavelet shape.
+
+For more information, see the help `?TimeParams`, `?ScaleParams`, and the method‑specific docs (e.g., `?TurbuThreshold`).
+
+## Advanced Usage
+
+Cross-correlations between signals (i.e., fluxes) are computed using domain-specific methods. `cross_scalogram` is used for wavelet-based approaches while the standard eddy-covariance approach use `cross_correlation_rey`.
 
 ## Contributing
 
-We encourage contributions from the community to help improve TurbulenceFlux.jl. If you have any suggestions, bug reports, or would like to contribute code, please feel free to open an issue or submit a pull request.
+Contributions are welcome ! Because the package targets a specialized research field —turbulence analysis and flux estimation— please feel free to open an issue or contact the maintainers if you have ideas for improvements or need specific modifications.

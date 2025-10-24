@@ -7,7 +7,7 @@ Abstract type for defining flux estimation methods. The following methods are de
 - `TurbuLaplacian`
 - `TurbuThreshold`
 
-Also see `estimate_flux`.
+Also see [`estimate_flux`](@ref), and each particular method (e.g. [`ReynoldsEstimation`](@ref)).
 """
 abstract type FluxEstimationMethod end
 
@@ -24,8 +24,8 @@ A `FluxEstimationMethod` based on the Reynolds decomposition.
 # Description
 To be used with `estimate_flux` in order to perform flux estimation. The Reynolds decomposition is defined via the time decomposition parameters `TimeParams`. The `tp` parameters are used to estimate the fluxes whil the `tp_aux` parameters are used to estimate auxilliary variables such as mean wind and density.
 
-# Computed Variables
-As input of `estimate_flux`, it will return a `FluxEstimate{ReynoldsEstimation}` result containing the following variables
+# Returns
+As input of `estimate_flux`, it will return a `FluxEstimate{ReynoldsEstimation}` object containing the following variables
  - `WS`: mean wind speed
  - `RHO`: mean density
  - `USTAR`: defined as `SQRT(U'W'^2+V'W'^2)``
@@ -36,43 +36,66 @@ As input of `estimate_flux`, it will return a `FluxEstimate{ReynoldsEstimation}`
 
 See `TimeParams`, `FluxEstimate` and `estimate_flux`.
 """
+
+"""
+    ReynoldsEstimation(; tp::TimeParams, tp_aux::TimeParams) <: FluxEstimationMethod
+
+A `FluxEstimationMethod` using the **Reynolds decomposition** for flux estimation.
+
+# Keyword Arguments
+- `tp::TimeParams`: Parameters for decomposing signals into mean and variable components.
+- `tp_aux::TimeParams`: Parameters for estimating auxiliary variables (e.g., mean wind, density).
+
+# Description
+This method is designed for use with [`estimate_flux`](@ref) to perform flux estimation. The Reynolds decomposition is applied using the time parameters specified in `tp` for flux estimation and `tp_aux` for auxiliary variables.
+
+# Returns
+When passed to `estimate_flux`, it returns a `FluxEstimate{ReynoldsEstimation}` object containing:
+- `WS`: Mean wind speed
+- `RHO`: Mean density
+- `USTAR`: Friction velocity, computed as `sqrt(U'W'^2 + V'W'^2)`
+- `U_SIGMA`, `V_SIGMA`, `W_SIGMA`: Time-varying standard deviations of `U`, `V`, and `W`
+- `H`: Sensible heat flux
+- Gas fluxes (depending on input; see [`TurbulenceFlux.gas_variables`](@ref) and [`output_variables`](@ref) for nomenclature)
+- Quality control variables for all above (suffixed with `_QC`; see [`QualityControl`](@ref) and [`FluxEstimate`](@ref)).
+
+# See Also
+[`TimeParams`](@ref), [`FluxEstimate`](@ref), [`estimate_flux`](@ref)
+"""
 @kwdef struct ReynoldsEstimation <: FluxEstimationMethod
     tp::TimeParams
     tp_aux::TimeParams
-    sensitivity::Bool = true
 end
 
 """
-    TurbuThreshold(;tr_tau,dp,tp_aux) <: FluxEstimationMethod
+    TurbuThreshold(; tr_tau, dp, tp_aux) <: FluxEstimationMethod
 
-A FluxEstimationMethod based on the thresholding of the Reynolds tensor in time-frequency space.
+A `FluxEstimationMethod` that estimates turbulent fluxes by thresholding the Reynolds tensor in time-frequency space.
 
-# Keyword Arguments
-- `dp::DecompParams`: time-frequency decomposition parameters
-- `tp_aux::TimeParams`: the parameters used to estimate auxilliary variables such as the mean wind speed and the density.
-- `tr_tau::Real`: the threshold used to isolate the vertical turbulent transport.
-- `sensitivity::Bool=true` : flag for computing sensitivity against time and averaging parameter
+# Arguments
+- `dp::DecompParams`: Parameters for time-frequency decomposition.
+- `tp_aux::TimeParams`: Parameters for estimating auxiliary variables (e.g., mean wind speed, density).
+- `tr_tau::Real`: Threshold value for isolating vertical turbulent transport.
+- `sensitivity::Bool=true`: If `true`, computes sensitivity to time and averaging parameters.
 
-# Description
-To be used with `estimate_flux` in order to perform flux estimation. Once the signals are decomposed in time-frequency space (TODO)... 
+# Output
+When passed to `estimate_flux`, this method returns a `FluxEstimate{ReynoldsEstimation}` containing:
+- `WS`: Mean wind speed.
+- `RHO`: Mean density.
+- `USTAR`: Friction velocity, computed as `sqrt(U'W'^2 + V'W'^2)`.
+- `U_SIGMA`, `V_SIGMA`, `W_SIGMA`: Time-varying standard deviations of `U`, `V`, and `W`.
+- `ETA`: Time-varying normalized frequency.
+- `TAUW_TF`: Vertical amplitude of the Reynolds tensor in time-frequency space.
+- `TAUW_TF_M`: Mask localizing turbulence in time-frequency space.
+- `TAUW`: Scale-integrated `TAUW_TF` according to `TAUW_TF_M`.
+- `H_TF`: Sensible heat flux in time-frequency space.
+- `H`: Scale-integrated `H_TF` according to `TAUW_TF_M`.
+- Time-frequency gas fluxes (suffix `_TF`) for recognized gases (see [`gas_variables`](@ref)).
+- Scale-integrated gas fluxes according to `TAUW_TF_M`.
+- Quality control variables (suffix `_QC`) for all output variables (see [`QualityControl`](@ref) and [`FluxEstimate`](@ref)).
 
-# Computed Variables
-As input of `estimate_flux`, it will return a FluxEstimate{ReynoldsEstimation} result containing the following variables
- - `WS`: mean wind speed
- - `RHO`: mean density
- - `USTAR`: defined as `SQRT(U'W'^2+V'W'^2)``
- - `U_SIGMA, V_SIGMA, W_SIGMA`: time-varying standard deviation of `U,V,W`
- - `ETA`: time varying normalized frequency
- - `TAUW_TF`: the vertical amplitude of the Reynold tensor in time-frequency space
- - `TAUW_TF_M`: a mask in time-frequency space localizing the turbulence
- - `TAUW`: the scale integration of `TAUW_TF` according to `TAUW_TF_M`
- - `H_TF`: Sensible Heat in time-frequency space
- - `H`: the scale integration of `H_TF` according to `TAUW_TF_M`
- - gas fluxes in time-frequency space (ending with _TF) depending on given inputs (see recognized gas `TurbulenceFlux.gas_variables` and `output_variables` for output nomenclature)
- - gas fluxes obtained after scale integration according to `TAUW_TF_M`
- - quality control variables are given for all above variables (ending with `_QC`) (see `QualityControl` and `FluxEstimate`)
-
-See `DecompParams`, `TimeParams`, `FluxEstimate`, `turbulence_mask` and `estimate_flux`
+# See Also
+- [`DecompParams`](@ref), [`TimeParams`](@ref), [`FluxEstimate`](@ref), [`turbulence_mask`](@ref), [`estimate_flux`](@ref)
 """
 @kwdef struct TurbuThreshold <: FluxEstimationMethod
     tr_tau::Real
@@ -82,41 +105,42 @@ See `DecompParams`, `TimeParams`, `FluxEstimate`, `turbulence_mask` and `estimat
 end
 
 """
-    TurbuLaplacian(;tr_tau,tr_dtau,dp,tp_aux,span=0.25 ) <: FluxEstimationMethod
 
-A FluxEstimationMethod based on the thresholding and laplacian of the Reynolds tensor in time-frequency space.
+    TurbuLaplacian(; tr_tau, tr_dtau, dp, tp_aux, span=0.25) <: FluxEstimationMethod
 
-# Keyword Arguments
-- `dp::DecompParams`: time-frequency decomposition parameters
-- `tp_aux::TimeParams`: the parameters used to estimate auxilliary variables such as the mean wind speed and the density.
-- `tr_tau::Real`: the threshold used to isolate the vertical turbulent transport.
-- `tr_dtau::Real`: the threshold used to isolate the zeros in the laplacian of TAUW_TF
-- `span::Real=0.25`: parameter used to influence the locally weighted regression algorithm
-- `sensitivity::Bool=true` : flag for computing sensitivity against time and averaging parameter
+A `FluxEstimationMethod` that estimates turbulent fluxes by applying thresholding and a Laplacian operator to the Reynolds tensor in time-frequency space.
 
-# Description
-To be used with `estimate_flux` in order to perform flux estimation. Once the signals are decomposed in time-frequency space (TODO)...
+# Arguments
+- `dp::DecompParams`: Parameters for time-frequency decomposition.
+- `tp_aux::TimeParams`: Parameters for estimating auxiliary variables (e.g., mean wind speed, density).
+- `tr_tau::Real`: Threshold for isolating vertical turbulent transport.
+- `tr_dtau::Real`: Threshold for isolating zeros in the Laplacian of `TAUW_TF`.
+- `span::Real=0.25`: Parameter influencing the locally weighted regression algorithm.
+- `sensitivity::Bool=true`: If `true`, computes sensitivity to time and averaging parameters.
 
-# Computed Variables
-As input of `estimate_flux`, it will return a FluxEstimate{ReynoldsEstimation} result containing the following variables
- - `WS`: mean wind speed
- - `RHO`: mean density
- - `USTAR`: defined as `SQRT(U'W'^2+V'W'^2)``
- - `U_SIGMA, V_SIGMA, W_SIGMA`: time-varying standard deviation of `U,V,W`
- - `ETA`: time varying normalized frequency
- - `TAUW_TF`: the vertical amplitude of the Reynold tensor in time-frequency space
- - `DTAUW_TF`: the laplacian of `TAUW_TF`
- - `SG`: a time varying spectral gap
- - `TAUW_TF_MADVEC`: a mask rejecting the large scale advection 
- - `TAUW_TF_M`: a mask in time-frequency space localizing the turbulence
- - `TAUW`: the scale integration of `TAUW_TF` according to `TAUW_TF_M`
- - `H_TF`: Sensible Heat in time-frequency space
- - `H`: the scale integration of `H_TF` according to `TAUW_TF_M`
- - gas fluxes in time-frequency space (ending with `_TF`) depending on given inputs (see recognized gas `TurbulenceFlux.gas_variables` and `output_variables` for output nomenclature)
- - gas fluxes obtained after scale integration according to `TAUW_TF_M`
- - quality control variables are given for all above variables (ending with `_QC`) (see `QualityControl` and `FluxEstimate`)
+# Output
+When passed to `estimate_flux`, this method returns a `FluxEstimate{ReynoldsEstimation}` containing:
 
-See `DecompParams`, `TimeParams`, `FluxEstimate`, `turbulence_mask` and `estimate_flux`
+## Core Variables
+- `WS`: Mean wind speed.
+- `RHO`: Mean density.
+- `USTAR`: Friction velocity, computed as `sqrt(U'W'^2 + V'W'^2)`.
+- `U_SIGMA`, `V_SIGMA`, `W_SIGMA`: Time-varying standard deviations of `U`, `V`, and `W`.
+- `ETA`: Time-varying normalized frequency.
+- `TAUW_TF`: Vertical amplitude of the Reynolds tensor in time-frequency space.
+- `DTAUW_TF`: Laplacian of `TAUW_TF`.
+- `SG`: Time-varying spectral gap.
+- `TAUW_TF_MADVEC`: Mask rejecting large-scale advection.
+- `TAUW_TF_M`: Mask localizing turbulence in time-frequency space.
+- `TAUW`: Scale-integrated `TAUW_TF` according to `TAUW_TF_M`.
+- `H_TF`: Sensible heat flux in time-frequency space.
+- `H`: Scale-integrated `H_TF` according to `TAUW_TF_M`.
+- Time-frequency gas fluxes (suffix `_TF`) for recognized gases (see [`gas_variables`](@ref)).
+- Scale-integrated gas fluxes according to `TAUW_TF_M`.
+- Quality control variables (suffix `_QC`) for all output variables (see [`QualityControl`](@ref) and [`FluxEstimate`](@ref)).
+
+# See Also
+- [`DecompParams`](@ref), [`TimeParams`](@ref), [`FluxEstimate`](@ref), [`turbulence_mask`](@ref), [`estimate_flux`](@ref)
 """
 @kwdef struct TurbuLaplacian <: FluxEstimationMethod
     tr_tau::Real
@@ -130,13 +154,13 @@ end
 """
     FluxEstimate{T<:FluxEstimationMethod}
 
-Output of `estimate_flux` with the following fields:
+Output structure returned by `estimate_flux`, containing the following fields:
 
-- `estimate::NamedTuple`: variables computed by the method `T`
-- `qc::QualityControl`: quality control variables on both input and output variables
-- `cp::CorrectionParams`: corrections used and updated before the estimation
-- `method::T`: the `FluxEstimationMethod` used
-
+# Fields
+- `estimate::NamedTuple`: Variables computed by the method `T`.
+- `qc::QualityControl`: Quality control variables for both input and output.
+- `cp::CorrectionParams`: Updated correction parameters.
+- `method::T`: The `FluxEstimationMethod` used for estimation.
 """
 @kwdef struct FluxEstimate{T<:FluxEstimationMethod}
     estimate::NamedTuple
@@ -469,17 +493,20 @@ function estimate_auxvar(df::Dict, tp::TimeParams, qc::QualityControl)
     return auxvars
 end
 
-
 """
-    estimate_flux(;df::Dict,aux::AuxVars,cp::CorrectionParams,method::FluxEstimationMethod)
 
-Estimate fluxes given input and auxilliary variables in `df` and `aux`.
+    estimate_flux(; df::Dict{Symbol,<:AbstractArray}, aux::AuxVars, cp::CorrectionParams, method::FluxEstimationMethod)::FluxEstimate
 
-# Keyword Arguments
- - `df::Dict`: a dictionnary mapping keys of type `Symbol` to arrays of data. The naming and unit convention used is given in `mandatory_variables` and `gas_variables`.
- - `aux::AuxVars`:  a struct for specifying auxilliary variables such as the sampling frequency. See `AuxVars`.
- - `cp::CorrectionParams`:
+Estimate fluxes using input data, auxiliary variables, correction and method parameters. Returns a `FluxEstimate` object containing the results.
 
+# Arguments
+- `df::Dict{Symbol,<:AbstractArray}`: A dictionary mapping `Symbol` keys to arrays of data. The keys and units must follow the conventions specified in [`mandatory_variables`](@ref) and [`gas_variables`](@ref).
+- `aux::AuxVars`: A struct containing auxiliary variables, such as sampling frequency. See [`AuxVars`](@ref) for details.
+- `cp::CorrectionParams`: A struct containing correction parameters. See [`CorrectionParams`](@ref) for details.
+- `method::FluxEstimationMethod`: A struct specifying the parameters for the flux estimation method. See [`FluxEstimationMethod`](@ref) for details.
+
+# Returns
+- `::FluxEstimate`: An object containing the estimated fluxes and associated metadata.
 """
 estimate_flux(; df, aux, cp, method) = estimate_flux(df, aux, cp, method)
 function estimate_flux(

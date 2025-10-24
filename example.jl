@@ -3,9 +3,10 @@ using TurbulenceFlux
 
 using Pkg
 Pkg.activate()
+Pkg.add(["JLD2","WGLMakie","Statistics"])
+
 using JLD2
-using DataFrames
-using CairoMakie
+using WGLMakie
 using Statistics
 
 ## Data Loading

@@ -115,6 +115,23 @@ struct GMWFrame
     analytic::Bool
 end
 
+"""
+    ScaleParams(b, g, J, Q, wmin, wmax, wave_dim, analytic, padding, frame)
+
+A struct to hold parameters for time-frequency scale decomposition.
+
+# Fields
+- `b::Real`: First parameter of the Generalized Morse Wavelet (e.g. `1`)
+- `g::Real`: Second parameter of the Generalized Morse Wavelet (e.g. `3`)
+- `J::Int`: Number of octaves (e.g. `floor(Int(log2(wave_dim)))`)
+- `Q::Int`: Number of inter-octaves (e.g. `3`)
+- `wmin::Real`: Minimum frequency pulsation (e.g. `2*pi/wave_dim`)
+- `wmax::Real`: Maximum frequency pulsation (e.g. `pi`)
+- `wave_dim::Int`: Size of the wavelet transform. 
+- `analytic::Bool`: If `true`, uses analytic wavelets.
+- `padding::Int`: Zero-padding length for the transform.
+- `frame::Ref{GMWFrame}`: Reference to the `GMWFrame` object used for the decomposition.
+"""
 mutable struct ScaleParams
     const b::Real
     const g::Real
@@ -151,6 +168,19 @@ ScaleParams(
     Ref{GMWFrame}(),
 )
 
+
+"""
+    TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
+
+A struct to hold parameters for time-domain averaging and sampling.
+
+# Fields
+- `kernel_dim::Int`: Size of the averaging kernel. 
+- `kernel_type::Symbol`: Type of kernel (e.g., `:gaussian`, `:rect`).
+- `kernel_params::AbstractArray{<:Real}`: Parameters defining the kernel (e.g., standard deviation for Gaussian).
+- `dt::Int`: Sampling time step.
+- `padding::Int`: Zero-padding length for the time-domain averaging.
+"""
 struct TimeParams
     kernel_dim::Int
     kernel_type::Symbol
@@ -167,6 +197,16 @@ TimeParams(
     padding::Int = 0,
 ) = TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
 
+
+"""
+    DecompParams(sp, tp)
+
+A struct to hold parameters for time-frequency decomposition and time averaging.
+
+# Fields
+- `sp::ScaleParams`: Parameters for scale (time-frequency) decomposition.
+- `tp::TimeParams`: Parameters for time-domain averaging.
+"""
 struct DecompParams
     sp::ScaleParams
     tp::TimeParams
