@@ -1,6 +1,6 @@
 name = "TurbulenceFlux"
 uuid = "801b548d-990e-47f8-8ae3-484f64b6e2ab"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["gabriel destouet <gabriel.destouet@protonmail.com>"]
 
 [deps]
