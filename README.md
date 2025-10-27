@@ -12,7 +12,7 @@ See the detailed example in `example.jl`, it also includes a link to download th
 ### Main entry point
 
 The function `estimate_flux` is the main entry point and is intended for operational flux estimation.
-```
+```julia
 function estimate_flux(
     df::Dict,
     aux::AuxVars,
@@ -29,7 +29,7 @@ It expects:
 For the naming convention used please check `mandatory_variables` and `gas_variables` constants.
 
 It returns a `FluxEstimate` object:
-```
+```julia
 struct FluxEstimate{T<:FluxEstimationMethod}
     estimate::NamedTuple
     qc::QualityControl
@@ -60,7 +60,34 @@ For more information, see the help `?TimeParams`, `?ScaleParams`, and the method
 
 ## Advanced Usage
 
-Cross-correlations between signals (i.e., fluxes) are computed using domain-specific methods. `cross_scalogram` is used for wavelet-based approaches while the standard eddy-covariance approach use `cross_correlation_rey`.
+One can implement its own estimation method by writing a new `estimate_flux` method that will dispatch on a custom `FluxEstimationMethod`. Consider the following example, where only the Sensible Heat flux is estimated using the Reynolds decomposition:
+
+```julia
+import TurbulenceFlux:FluxEstimationMethod,tofluxunits
+struct HOnly <: FluxEstimationMethod
+  tp::TimeParams
+end
+
+function estimate_flux(df::Dict,aux::AuxVars,cp::CorrectionParams,method::HOnly)
+  (:W in keys(df)) || throw("W is missing")
+  W = df[:W]
+  !isempty(intersect(keys(df),[:TA,:T_SONIC])) || throw("TA or T_SONIC is missing")
+  TA = get(df,:TA,df[:T_SONIC]) .+ 273.15
+  (:PA in keys(df)) || throw("PA is missing")
+  PA = df[:PA].*1000
+  RHO = mean_density(PA,TA,tp)
+  subsampling = false
+  W_v = W -average(W,tp,subsampling)
+  TA_v = TA - average(TA,tp,subsampling)
+  H = average(W_v.*TA_v,tp)
+  H = tofluxunits(H,RHO,:H)
+  return H
+end
+```
+
+For more inspiration, check other implemented methods such as `estimate_flux(df,aux,cp,method::ReynoldsEstimation)` and `estimate_flux(df,aux,cp,method::TurbuThreshold)`.
+
+In particular, if multiple cross-correlations are needed between signals then `cross_scalogram` for wavelet-based approaches and `cross_correlation_rey` for Reynolds decomposition can be used.
 
 ## Contributing
 
