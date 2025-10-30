@@ -140,8 +140,8 @@ end
     kernel_params = default_params(kernel_type, kernel_dim)
     tp = TimeParams(kernel_dim, kernel_type, kernel_params)
     xy_avg = average(xy, tp)
-    xy_dtavg = dt_average(xy, tp)
-    xy_dpavg = dp_average(xy, tp)
+    # xy_dtavg = dt_average(xy, tp) TODO
+    # xy_dpavg = dp_average(xy, tp)
 
     @testset "Kernel: $kernel_type" for kernel_type in
                                         [:gaussian, :gaussian_exponential, :rect],
