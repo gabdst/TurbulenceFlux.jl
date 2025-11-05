@@ -1,9 +1,9 @@
-push!(LOAD_PATH,".")
+push!(LOAD_PATH, ".")
 using TurbulenceFlux
 
 using Pkg
 Pkg.activate()
-Pkg.add(["JLD2","WGLMakie","Statistics"])
+Pkg.add(["JLD2", "WGLMakie", "Statistics"])
 
 using JLD2
 using WGLMakie
@@ -16,59 +16,59 @@ dates = keys(data)
 d = first(dates)
 signals = data[d]["Signals"]
 # Converting to Dictionnary
-signals = Dict(Symbol(k)=>signals[k] for k in keys(signals))
+signals = Dict(Symbol(k) => signals[k] for k in keys(signals))
 
 ## Parameters Definition
 work_dim = length(signals[:W])
 # Auxilliaryi variables
 fs = 20 # Hz, sampling frequency
 z_d = 10  # m, displacement height
-aux = AuxVars(;fs,z_d)
+aux = AuxVars(; fs, z_d)
 cp = CorrectionParams()
 # Wavelet Parameters
-wave_dim = 10*60*60*fs # max wavelet duration of 10 hours
+wave_dim = 24 * 60 * 60 * fs # max wavelet duration of 10 hours
 b = 1
 g = 3
-J = floor(Int, log2(work_dim)) 
+J = floor(Int, log2(wave_dim))
 Q = 2
-wmin = 2pi * (1.2*fs/wave_dim)/fs # The lowest fourier frequency is fs/wave_dim
-wmax = 2pi * (fs/2)/fs
-sp = ScaleParams(b,g,J,Q,wmin,wmax,wave_dim)
+wmin = 2pi * (2 * fs / wave_dim) / fs # The lowest fourier frequency is fs/wave_dim
+wmax = 2pi * (fs / 2) / fs
+sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
 
 # Time-Averaging Parameters
-kernel_dim = 10*60*60*fs # Max averaging length of 10 hours
+kernel_dim = 24 * 60 * 60 * fs # Max averaging length of 10 hours
 kernel_type = :gaussian
-kernel_params = [30*20*fs] # 30 min averaging time
-dt=fs*60 # 1minute time sampling
-tp = TimeParams(kernel_dim,kernel_type,kernel_params;dt)
-dp = DecompParams(sp,tp)
+kernel_params = [30 * 20 * fs] # 30 min averaging time
+dt = fs * 60 # 1minute time sampling
+tp = TimeParams(kernel_dim, kernel_type, kernel_params; dt)
+dp = DecompParams(sp, tp)
 # Using the same Time-Averaging parameters for auxilliary estimates ( V_SIGMA,W_SIGMA,USTAR,RHO, etc...)
 tp_aux = tp
 
 # Method Parameters
-method = TurbuLaplacian(;tr_tau = 1e-3,tr_dtau=1,dp,tp_aux)
+method = TurbuLaplacian(; tr_tau = 1.0e-3, tr_dtau = 1, dp, tp_aux)
 
 # Estimation
-results = estimate_flux(signals,aux,cp,method)
+results = estimate_flux(signals, aux, cp, method)
 
 cmap_flux = Makie.Reverse(:bam)
 cmap_tau = Makie.Reverse(:roma)
 function plot_contour(
-    x,
-    y,
-    z;
-    g = nothing,
-    xlabel = "",
-    ylabel = "",
-    zlabel = "",
-    mask = nothing,
-    mask_alpha = 0.25,
-    vmin = -5 * std(z),
-    vmax = 5 * std(z),
-    length = 20,
-    levels = range(vmin, vmax, length = length),
-    colormap = cmap_tau,
-)
+        x,
+        y,
+        z;
+        g = nothing,
+        xlabel = "",
+        ylabel = "",
+        zlabel = "",
+        mask = nothing,
+        mask_alpha = 0.25,
+        vmin = -5 * std(z),
+        vmax = 5 * std(z),
+        length = 20,
+        levels = range(vmin, vmax, length = length),
+        colormap = cmap_tau,
+    )
     ax = Axis(g[1, 1]; xlabel, ylabel)
     co = contourf!(ax, x, y, z; levels, colormap)
     if !isnothing(mask)
@@ -88,13 +88,13 @@ end
 tauw = results.estimate.TAUW_TF
 dtauw = results.estimate.DTAUW_TF
 FC = results.estimate.FC
-FC_TF  = results.estimate.FC_TF
+FC_TF = results.estimate.FC_TF
 tauw_m = results.estimate.TAUW_TF_M
 
-h(d) = d[:, 1:end-1] # Removal of lowest frequency band (mean)
+h(d) = d[:, 1:(end - 1)] # Removal of lowest frequency band (mean)
 eta = log10.(results.estimate.ETA) # Time-varying normalized frequency
 etaref = h(eta)[div(size(eta, 1), 2), :] # Normalized frequency estimated at noon
-tref = (0:dt:(work_dim-1) ) * 1/fs / (60*60)
+tref = (0:dt:(work_dim - 1)) * 1 / fs / (60 * 60)
 fig = Figure(size = (1000, 600));
 g1 = GridLayout(fig[1, 1])
 g2 = GridLayout(fig[2, 1])
@@ -105,7 +105,7 @@ g1, ax1 = plot_contour(
     tref,
     etaref,
     h(tauw);
-     mask = h(tauw_m),
+    mask = h(tauw_m),
     g = g1,
     xlabel,
     ylabel,
@@ -124,7 +124,7 @@ g3, ax3, ax_line = plot_contour_line(
     tref,
     etaref,
     h(FC_TF);
-     mask = h(tauw_m),
+    mask = h(tauw_m),
     g = g3,
     xlabel,
     ylabel,

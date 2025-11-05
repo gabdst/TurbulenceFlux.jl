@@ -660,11 +660,10 @@ end
 
 function method_timestep(method::Union{TurbuThreshold, TurbuLaplacian}, work_dim::Int, f::Float64)
     mask = converror_mask(method.dp, work_dim; subsampling = false)
-    K = mapslices(mask, dims = 1) do x
-        findfirst(.!x)
-    end
+    K = Union{Nothing, Int}[ findfirst(view(.!mask, :, i)) for i in axes(mask, 2) ]
+    K[isnothing.(K)] .= div(work_dim, 2)
     freq_peaks = frequency_peaks(method.dp)
-    i = findmin(abs, freq_peaks .- f)
+    i = findmin(abs, freq_peaks .- f)[2]
     return work_dim - 2 * floor(Int, K[i])
 end
 
