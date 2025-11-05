@@ -162,72 +162,72 @@ Output structure returned by `estimate_flux`, containing the following fields:
 - `cp::CorrectionParams`: Updated correction parameters.
 - `method::T`: The `FluxEstimationMethod` used for estimation.
 """
-@kwdef struct FluxEstimate{T<:FluxEstimationMethod}
+@kwdef struct FluxEstimate{T <: FluxEstimationMethod}
     estimate::NamedTuple
     qc::QualityControl
     cp::CorrectionParams
     method::T
-    units::NamedTuple=NamedTuple(k=>output_variables[k] for k in intersect(keys(estimate),keys(output_variables)))
+    units::NamedTuple = NamedTuple(k => output_variables[k] for k in intersect(keys(estimate), keys(output_variables)))
 end
 
 
-function Base.show(io::IO,e::FluxEstimate{T}) where {T<:FluxEstimationMethod}
-    print(io,"Flux Estimation Results with method $(T)\n")
+function Base.show(io::IO, e::FluxEstimate{T}) where {T <: FluxEstimationMethod}
+    print(io, "Flux Estimation Results with method $(T)\n")
     S = string.(collect(keys(e.estimate)))
-    filter!(!endswith("_QC"),S)
-    if T <: Union{TurbuThreshold,TurbuLaplacian}
-    print(io,"\nTime-Frequency variables: ")
+    filter!(!endswith("_QC"), S)
+    if T <: Union{TurbuThreshold, TurbuLaplacian}
+        print(io, "\nTime-Frequency variables: ")
+        for s in S
+            ss = Symbol(s)
+            if !endswith(s, "_TF")
+                continue
+            end
+            print(io, s)
+            if ss in keys(output_variables)
+                unit = output_variables[ss]
+                print(io, " ($unit)")
+            end
+            print(io, ", ")
+        end
+        if "ETA" in S
+            print(io, "\nNormalized Frequency: ETA")
+        end
+    end
+    print(io, "\nTime variables: ")
     for s in S
         ss = Symbol(s)
-        if !endswith(s,"_TF")
+        if endswith(s, "_TF")
             continue
         end
-        print(io,s)
-        if ss in keys(output_variables)
-            unit = output_variables[ss]
-            print(io, " ($unit)")
-        end
-        print(io, ", ")
-    end
-    if "ETA" in S
-        print(io, "\nNormalized Frequency: ETA")
-    end
-    end
-    print(io,"\nTime variables: ")
-    for s in S
-        ss = Symbol(s)
-        if endswith(s,"_TF")
-            continue
-        end
-        print(io,s)
+        print(io, s)
         if ss in keys(output_variables)
             unit = output_variables[ss]
             if unit != NoUnits
                 print(io, " ($unit)")
             end
         end
-        print(io,", ")
+        print(io, ", ")
     end
-    print(io,"\nQuality Control variables are ending with _QC")
+    return print(io, "\nQuality Control variables are ending with _QC")
 end
 
 function tofluxunits(F::AbstractArray, density::AbstractVector, fluxtype::Symbol)
-    if fluxtype in (:H,:H_TF)
+    if fluxtype in (:H, :H_TF)
         F = F .* density * C_p #W/m2
-    elseif fluxtype in (:LE,:LE_TF)
+    elseif fluxtype in (:LE, :LE_TF)
         F = F .* density * LAMBDA #W/m2
-    elseif fluxtype in (:FC,:FC_TF)
+    elseif fluxtype in (:FC, :FC_TF)
         F = F .* density # umol/m2/s
-    elseif fluxtype in (:TAUW,:TAUW_TF)
+    elseif fluxtype in (:TAUW, :TAUW_TF)
     end
     return F
 end
 
 function normalized_frequency(
-    frequencies::AbstractVector{<:Real},
-    mean_wind::AbstractVector{<:Real},
-    distance::Real,
-)
+        frequencies::AbstractVector{<:Real},
+        mean_wind::AbstractVector{<:Real},
+        distance::Real,
+    )
     return distance * frequencies' ./ mean_wind
 end
 
@@ -303,18 +303,9 @@ end
 
 Integrate along the scales the scalogram `scalo` given `mask`.
 """
-function flux_scale_integral(scalo::AbstractArray{<:Real,2}, mask::AbstractArray{Bool,2})
+function flux_scale_integral(scalo::AbstractArray{<:Real, 2}, mask::AbstractArray{Bool, 2})
     size(mask) == size(scalo) || throw(error("Wrong size between mask and scalogram"))
-    F = Vector{Float64}(undef, size(scalo, 1))
-    for j in axes(F, 1)
-        values = scalo[j, mask[j, :]]
-        if isempty(values)
-            F[j] = NaN
-        else
-            F[j] = sum(values)
-        end
-    end
-    return F
+    return sum(scalo .* mask, dims = 2)
 end
 
 """
@@ -323,16 +314,16 @@ end
 Compute the cross-scalogram of `WS1`, `WS2`, ... .
 """
 function flux_scalogram(
-    w::AbstractVector{<:Real},
-    s::AbstractVector{<:AbstractVector{<:Real}},
-    dp::DecompParams,
-)
+        w::AbstractVector{<:Real},
+        s::AbstractVector{<:AbstractVector{<:Real}},
+        dp::DecompParams,
+    )
     allequal(length, s) && length(w) == length(s[1]) ||
         throw(error("Signals must be of the same size."))
     (; tp, sp) = dp
     avg_kernel = averaging_kernel(tp)
     gmw = GMWFrame(sp)
-    C = [(1, i + 1) for i = 1:length(s)]
+    C = [(1, i + 1) for i in 1:length(s)]
     L = [w, s...]
     return cross_scalogram(L, C, dp, gmw, avg_kernel)
 end
@@ -359,10 +350,10 @@ end
 Compute the turbulence mask `TAUW_TF_M` given the estimation `method`.
 """
 function turbulence_mask(
-    tauw::AbstractArray{<:Real,2},
-    method::TurbuThreshold,
-    mask_error::Union{Nothing,AbstractArray{Bool}} = nothing,
-)
+        tauw::AbstractArray{<:Real, 2},
+        method::TurbuThreshold,
+        mask_error::Union{Nothing, AbstractArray{Bool}} = nothing,
+    )
     (; tr_tau) = method
     mask = tauw .> tr_tau
     if !isnothing(mask_error)
@@ -372,12 +363,12 @@ function turbulence_mask(
 end
 
 function turbulence_mask(
-    tauw::AbstractArray{<:Real,2},
-    WS::AbstractArray{<:Real,1},
-    aux::AuxVars,
-    method::TurbuLaplacian,
-    mask_error::Union{Nothing,AbstractArray{Bool}} = nothing,
-)
+        tauw::AbstractArray{<:Real, 2},
+        WS::AbstractArray{<:Real, 1},
+        aux::AuxVars,
+        method::TurbuLaplacian,
+        mask_error::Union{Nothing, AbstractArray{Bool}} = nothing,
+    )
     (; tr_tau, tr_dtau, span, dp) = method
     (; z_d) = aux
     S = size(tauw)
@@ -401,7 +392,7 @@ function turbulence_mask(
 
     # Reject low-pass filter i.e. at freq_p[end]
     mask = trues(S)
-    mask[:, freq_peaks.==0] .= false
+    mask[:, freq_peaks .== 0] .= false
 
     adj_mat = grid_adj_mat(S, mask) # 9-point grid adjacency matrix with removed vertices from mask
     weights_mat = adj_mat # Using the adjacency matrix as the weight matrix amounts to compute a normal laplacian
@@ -409,21 +400,21 @@ function turbulence_mask(
     g = MyGraph(adj_mat, weights_mat)
     L = laplacian_matrix(g)
     dtau = reshape(L * ltauw_v, S) # the laplacian is zero where mask is false
-    ltauw_v= reshape(ltauw_v, S)
+    ltauw_v = reshape(ltauw_v, S)
 
     detected = reshape(dtau .> tr_dtau, S) # Look at (t,eta) points with important minimas
     if !isnothing(mask_error)
         detected[mask_error] .= false # remove points with convolution errors
     end
-    detected[(eta.>1)] .= false # remove points above eta = 0
+    detected[(eta .> 1)] .= false # remove points above eta = 0
 
     if count(detected) == 0
         sg = eta[:, end]
         mask_advec = mask # Get the mask removing the advection + removing the mean value
     else
         #itp = _interpolate_eta(t[detected[:]], eta[detected[:]], λ,d) # Old way: Bspline interpolation + smoothness regularization to get interpolated value at each time t, extrapolate with constant values on the borders
-        # 
-        ts = collect(Iterators.flatten((t[view(detected, :, i)] for i = 1:size(detected, 2))))
+        #
+        ts = collect(Iterators.flatten((t[view(detected, :, i)] for i in 1:size(detected, 2))))
         itp = _locally_weighted_regression(ts, eta[detected], span)
         sg = itp.(t) #Time-Varying spectral gap
         mask_advec = (eta .> sg) .&& mask # Get the mask removing the advection + removing the mean value
@@ -510,11 +501,11 @@ Estimate fluxes using input data, auxiliary variables, correction and method par
 """
 estimate_flux(; df, aux, cp, method) = estimate_flux(df, aux, cp, method)
 function estimate_flux(
-    df::Dict,
-    aux::AuxVars,
-    cp::CorrectionParams,
-    method::ReynoldsEstimation,
-)
+        df::Dict,
+        aux::AuxVars,
+        cp::CorrectionParams,
+        method::ReynoldsEstimation,
+    )
     (; tp, tp_aux) = method
     tp.dt == tp_aux.dt || throw(
         error(
@@ -558,11 +549,11 @@ function estimate_flux(
 end
 
 function estimate_flux(
-    df::Dict,
-    aux::AuxVars,
-    cp::CorrectionParams,
-    method::Union{TurbuThreshold,TurbuLaplacian},
-)
+        df::Dict,
+        aux::AuxVars,
+        cp::CorrectionParams,
+        method::Union{TurbuThreshold, TurbuLaplacian},
+    )
     (; dp, tp_aux) = method
     (; tp) = dp
     df = deepcopy(df)
@@ -599,8 +590,8 @@ function estimate_flux(
     scalo[:TAUW_TF] = _tauw(scalo[:WW_TF], scalo[:UW_TF], scalo[:VW_TF])
 
     # Quality Control via error propagation
-    L_qc = Dict{Symbol,Array{Bool}}()
-    C_qc = Dict{Tuple{Symbol,Symbol},Symbol}()
+    L_qc = Dict{Symbol, Array{Bool}}()
+    C_qc = Dict{Tuple{Symbol, Symbol}, Symbol}()
     for c in keys(C)
         x, y = c
         xq = Symbol(x, :_QC)
@@ -617,7 +608,7 @@ function estimate_flux(
     end
     scalo_qc = cross_scalogram(L_qc, C_qc, dp) #To look at error propagation in time-scale
     for c in keys(scalo_qc)
-        qc[c] = sparse(abs.(scalo_qc[c]) .> 1e-6) .|| qc[:RHO]
+        qc[c] = sparse(abs.(scalo_qc[c]) .> 1.0e-6) .|| qc[:RHO]
     end
     qc[:TAUW_TF_QC] = qc[:WW_TF_QC] .|| qc[:UW_TF_QC] .|| qc[:VW_TF_QC]
 
@@ -651,13 +642,13 @@ function estimate_flux(
     for c in values(C)
         var = Symbol(split(string(c), "_TF")[1])
         estimate[var] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
-        mask = sparse(flux_scale_integral(qc[Symbol(c, :_QC)], estimate[:TAUW_TF_M]).>1e-6)
+        mask = sparse(flux_scale_integral(qc[Symbol(c, :_QC)], estimate[:TAUW_TF_M]) .> 1.0e-6)
         update_quality_control!(qc, var, mask)
     end
-    estimate[:TAUW] = flux_scale_integral(scalo[:TAUW_TF],estimate[:TAUW_TF_M])
-    mask = sparse(flux_scale_integral(qc[:TAUW_TF_QC], estimate[:TAUW_TF_M]).>1e-6)
+    estimate[:TAUW] = flux_scale_integral(scalo[:TAUW_TF], estimate[:TAUW_TF_M])
+    mask = sparse(flux_scale_integral(qc[:TAUW_TF_QC], estimate[:TAUW_TF_M]) .> 1.0e-6)
     update_quality_control!(qc, :TAUW, mask)
-    for c in union(values(C_dp),values(C_dt))
+    for c in union(values(C_dp), values(C_dt))
         var = Symbol(split(string(c), "_TF")[1])
         estimate[var] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
     end
@@ -665,6 +656,22 @@ function estimate_flux(
     estimate[:ETA] = normalized_frequency(freq_peaks, estimate[:WS], aux.z_d)
     estimate = to_nt(merge_qc!(estimate, qc))
     return FluxEstimate(; estimate, qc, cp, method)
+end
+
+function method_timestep(method::Union{TurbuThreshold, TurbuLaplacian}, work_dim::Int, f::Float64)
+    mask = converror_mask(method.dp, work_dim; subsampling = false)
+    K = mapslices(mask, dims = 1) do x
+        findfirst(.!x)
+    end
+    freq_peaks = frequency_peaks(method.dp)
+    i = findmin(abs, freq_peaks .- f)
+    return work_dim - 2 * floor(Int, K[i])
+end
+
+function method_timestep(method::ReynoldsEstimation, work_dim::Int)
+    mask = converror_mask(method.tp, work_dim; subsampling = false)
+    K = findfirst(.!mask)
+    return work_dim - 2 * K
 end
 
 # function turbu_extract_diffusion(
