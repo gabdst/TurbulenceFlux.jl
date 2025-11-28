@@ -693,10 +693,10 @@ end
 
 
 function error_mask(tp::TimeParams, mask::AbstractArray{Bool}; subsampling = true)
+    N = length(mask)
     mask = average(mask, tp; subsampling)
-    mask ./= mask[1]
     mask = mask .> 0.01
-    convmask = converror_mask(tp, length(mask))
+    convmask = converror_mask(tp, N)
     mask = mask .|| convmask
     return mask
 end
