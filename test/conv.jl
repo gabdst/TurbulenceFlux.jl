@@ -15,7 +15,7 @@ import TurbulenceFlux: CConv
         y = cconv(x, circshift(kernel, phase); phase)
         @test isapprox(y, kernel)
     end
-    # With padding it is more tricky to check phase compensation since signals the output is cropped 
+    # With padding it is more tricky to check phase compensation since signals the output is cropped
     # Without phase compensation
     work_dim = 19
     kernel_dim = 5
@@ -33,8 +33,8 @@ import TurbulenceFlux: CConv
         phase = default_phase_kernel(kernel_dim)
         cconv = CConv(Float64, work_dim; padding)
         y = cconv(x, kernel; phase)
-        @test isapprox(y[1:(kernel_dim-phase)], kernel[1:(kernel_dim-phase)])
-        @test all(isapprox.(y[(kernel_dim-phase+1):end], 0, atol = 1e-6))
+        @test isapprox(y[1:(kernel_dim - phase)], kernel[1:(kernel_dim - phase)])
+        @test all(isapprox.(y[(kernel_dim - phase + 1):end], 0, atol = 1.0e-6))
     end
 
     @testset "Skipping Kernel Load" begin
@@ -64,8 +64,11 @@ end
     wmax = pi
     sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
     gmw = GMWFrame(sp)
-    # Test Ref to frame in sp
-    @test sp.frame[] === gmw
+    @test sp.frame === gmw
+    freeframe!(sp)
+    @test sp.frame == nothing
+    setframe!(sp)
+    @test sp.frame !== gmw
     # Test Unit Power
     power = sum(x -> norm(x)^2, gmw.frame)
     @test isapprox(power, 1)
@@ -144,8 +147,8 @@ end
     # xy_dpavg = dp_average(xy, tp)
 
     @testset "Kernel: $kernel_type" for kernel_type in
-                                        [:gaussian, :gaussian_exponential, :rect],
-        kernel_dim in [32, 33]
+            [:gaussian, :gaussian_exponential, :rect],
+            kernel_dim in [32, 33]
 
         kernel_params = default_params(kernel_type, kernel_dim)
         tp = TimeParams(kernel_dim, kernel_type, kernel_params)
@@ -212,7 +215,7 @@ end
     out = cross_scalogram(L[:x1], L[:x1], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x1
     out = cross_scalogram(L[:x1], L[:x2], dp, gmw, avg_kernel)
-    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
+    @test isapprox(sum(out), 0, atol = 1.0e-6) # The flux is zero between x1 and x2
     out = cross_scalogram(L[:x1], L[:x3], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x3
     # Check that we obtain the same with or without next2pow padding
@@ -223,7 +226,7 @@ end
     out = cross_scalogram(L[:x1], L[:x1], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x1
     out = cross_scalogram(L[:x1], L[:x2], dp, gmw, avg_kernel)
-    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
+    @test isapprox(sum(out), 0, atol = 1.0e-6) # The flux is zero between x1 and x2
     out = cross_scalogram(L[:x1], L[:x3], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x3
     # An with reduced kernel sizes
@@ -232,14 +235,14 @@ end
     out = cross_scalogram(L[:x1], L[:x1], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x1
     out = cross_scalogram(L[:x1], L[:x2], dp, gmw, avg_kernel)
-    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
+    @test isapprox(sum(out), 0, atol = 1.0e-6) # The flux is zero between x1 and x2
     out = cross_scalogram(L[:x1], L[:x3], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x3
 
     # Multiple Signals
     C = Dict((:x1, :x2) => :x12, (:x1, :x3) => :x13, (:x2, :x3) => :x23, (:x2, :x1) => :x21)
     out = cross_scalogram(L, C, dp, gmw, avg_kernel)
-    @test isapprox(sum(out[:x12]), 0, atol = 1e-6)
+    @test isapprox(sum(out[:x12]), 0, atol = 1.0e-6)
     @test isapprox(sum(out[:x13]), 1)
     @test isapprox(sum(out[:x23]), 1)
     @test isapprox(out[:x12], out[:x21])

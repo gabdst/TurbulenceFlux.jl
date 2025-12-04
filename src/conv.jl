@@ -142,7 +142,7 @@ mutable struct ScaleParams
     const wave_dim::Int
     const analytic::Bool
     const padding::Int
-    frame::Ref{GMWFrame}
+    frame::Union{Nothing, GMWFrame}
 end
 
 ScaleParams(
@@ -165,7 +165,7 @@ ScaleParams(
     wave_dim,
     analytic,
     padding,
-    Ref{GMWFrame}(),
+    nothing
 )
 
 
@@ -385,16 +385,22 @@ function dp_averaging_kernel(
 end
 
 function GMWFrame(sp::ScaleParams)
+    if isnothing(sp.frame)
+        setframe!(sp)
+    end
+    return sp.frame
+end
+
+setframe!(sp::ScaleParams) = begin
     (; wave_dim, analytic) = sp
     params = wavelet_parameters(sp)
-    if isassigned(sp.frame)
-        frame = sp.frame[]
-    else
-        frame = GMWFrame(wave_dim, params; analytic)
-        sp.frame = Ref(frame)
-    end
-    return frame
+    frame = GMWFrame(wave_dim, params; analytic)
+    sp.frame = frame
+    return sp
 end
+
+freeframe!(dp::DecompParams) = freeframe!(dp.sp)
+freeframe!(sp::ScaleParams) = sp.frame = nothing
 
 GMWFrame(dp::DecompParams) = GMWFrame(ScaleParams(dp))
 

@@ -111,7 +111,6 @@ end
     z_d::Float64 # Displacement Height
 end
 
-
 @kwdef mutable struct CorrectionParams
     timelag_max::Integer = 0
     fc_timelag::Real = 0.1 # Cutting frequency for timelag optimization, 0.1Hz by default
@@ -195,5 +194,7 @@ export DecompParams,
     FluxEstimate,
     method_timestep,
     converror_mask,
-    error_mask
+    error_mask,
+    freeframe!,
+    setframe!
 end
