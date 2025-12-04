@@ -196,5 +196,6 @@ export DecompParams,
     converror_mask,
     error_mask,
     freeframe!,
-    setframe!
+    setframe!,
+    zero_crossings
 end

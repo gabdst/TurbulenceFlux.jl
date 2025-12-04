@@ -457,6 +457,23 @@ function GMWFrame(
     return GMWFrame(N, params, frame, freq_peaks, sigmas, selfdual, analytic)
 end
 
+function zero_crossings(gmw::GMWFrame)
+    zc = Union{Integer, Nothing}[]
+    for g in gmw.frame
+        gfft = real(ifft(abs2.(fft(g))))
+        i_2 = findfirst(<(0), g)
+        if !isnothing(i_2)
+            i_1 = i_2 - 1
+            t_0 = i_2 - g[i_2] * (i_2 - i_1) / (g[i_2] - g[i_1])
+            t_0 -= 1
+        else
+            t_0 = nothing
+        end
+        push!(zc, t_0)
+    end
+    return zc
+end
+
 function make_mem(C)
     ckf = collect(Iterators.flatten(keys(C)))
     ccount = map(k -> (k, count(==(k), ckf)), unique(ckf))
