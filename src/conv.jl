@@ -168,6 +168,22 @@ ScaleParams(
     nothing
 )
 
+abstract type AvgKernel end
+
+struct GaussAvg <: AvgKernel
+    kernel_dim::Integer
+    sigma::Float64
+end
+
+struct RectAvg <: AvgKernel
+    kernel_dim::Integer
+    T::Float64
+end
+
+struct ScaleAvg <: AvgKernel
+    kernel_dim::Integer
+    scales::Vector{<:AvgKernel}
+end
 
 """
     TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
@@ -175,28 +191,19 @@ ScaleParams(
 A struct to hold parameters for time-domain averaging and sampling.
 
 # Fields
-- `kernel_dim::Int`: Size of the averaging kernel. 
-- `kernel_type::Symbol`: Type of kernel (e.g., `:gaussian`, `:rect`).
-- `kernel_params::AbstractArray{<:Real}`: Parameters defining the kernel (e.g., standard deviation for Gaussian).
+- `kernel::AvgKernel`: type of averaging used. 
 - `dt::Int`: Sampling time step.
 - `padding::Int`: Zero-padding length for the time-domain averaging.
 """
 struct TimeParams
-    kernel_dim::Int
-    kernel_type::Symbol
-    kernel_params::AbstractArray{<:Real}
+    kernel::AvgKernel
     dt::Int
     padding::Int
 end
 
-TimeParams(
-    kernel_dim::Int,
-    kernel_type::Symbol,
-    kernel_params::AbstractArray{<:Real};
-    dt::Int = 1,
-    padding::Int = 0,
-) = TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
-
+function TimeParams(avg_kernel::AvgKernel; dt::Int = 1, padding::Int = 0)
+    return TimeParams(avg_kernel, dt, padding)
+end
 
 """
     DecompParams(sp, tp)
@@ -215,26 +222,6 @@ end
 ScaleParams(dp::DecompParams) = dp.sp
 TimeParams(dp::DecompParams) = dp.tp
 
-function DecompParams(;
-        b::Real,
-        g::Real,
-        J::Int,
-        Q::Int,
-        wmin::Real,
-        wmax::Real,
-        wave_dim::Int,
-        kernel_dim::Int,
-        kernel_type::Symbol,
-        kernel_params::AbstractArray{<:Real},
-        dt::Int = 1,
-        analytic::Bool = false,
-        padding::Int = 0,
-    )
-    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim; analytic, padding)
-    tp = TimeParams(kernel_dim, kernel_type, kernel_params; dt, padding)
-    return DecompParams(sp, tp)
-end
-
 function wavelet_parameters(b, g, J, Q, wmin, wmax)
     return GMW.gmw_grid(b, g, J, Q, wmin, wmax, 0)
 end
@@ -250,139 +237,86 @@ frequency_peaks(sp::ScaleParams) =
 _gauss(t, p) = exp(-0.5 * (t / p) .^ 2)
 _dtgauss(t, p) = -(t / p^2) * _gauss(t, p)
 _dpgauss(t, p) = -(t^2 / p^3) * _gauss(t, p)
-function gausskernel(kernel_dim, kernel_params)
-    p = kernel_params[1]
-    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
-    g = _gauss.(t, p)
+
+function averaging_kernel(avg::GaussAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    g = _gauss.(t, avg.sigma)
     g = g / sum(g)
     return g
 end
 
-function dt_gausskernel(kernel_dim, kernel_params)
-    p = kernel_params[1]
-    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
-    g = _gauss.(t, p)
-    dg = _dtgauss.(t, p)
+function dt_averaging_kernel(avg::GaussAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    g = _gauss.(t, avg.sigma)
+    dg = _dtgauss.(t, avg.sigma)
     return g = dg / sum(g)
 end
 
-function dp_gausskernel(kernel_dim, kernel_params)
-    p = kernel_params[1]
-    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
-    g = _gauss.(t, p)
-    dpg = _dpgauss.(t, p)
+function dp_averaging_kernel(avg::GaussAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    g = _gauss.(t, avg.sigma)
+    dpg = _dpgauss.(t, avg.sigma)
     s = sum(g)
     ds = sum(dpg)
     return g = (s * dpg - ds * g) / s^2
 end
 
-function gauss_expo_kernel(kernel_dim, kernel_params)
-    s, alpha, n = kernel_params
-    sigmas = exp.([log(s) + i * log(alpha) for i in 0:(n - 1)])
-    return [gausskernel(kernel_dim, sigma) for sigma in sigmas]
-end
+averaging_kernel(avg::ScaleAvg) = averaging_kernel.(avg.scales)
 
-function dt_gauss_expo_kernel(kernel_dim, kernel_params)
-    s, alpha, n = kernel_params
-    sigmas = exp.([log(s) + i * log(alpha) for i in 0:(n - 1)])
-    return [dt_gausskernel(kernel_dim, sigma) for sigma in sigmas]
-end
+# function gauss_expo_kernel(kernel_dim, kernel_params)
+#     s, alpha, n = kernel_params
+#     sigmas = exp.([log(s) + i * log(alpha) for i in 0:(n - 1)])
+#     return [gausskernel(kernel_dim, sigma) for sigma in sigmas]
+# end
 
-function dp_gauss_expo_kernel(kernel_dim, kernel_params)
-    s, alpha, n = kernel_params
-    sigmas = exp.([log(s) + i * log(alpha) for i in 0:(n - 1)])
-    return [dp_gausskernel(kernel_dim, sigma) for sigma in sigmas]
-end
+# function dt_gauss_expo_kernel(kernel_dim, kernel_params)
+#     s, alpha, n = kernel_params
+#     sigmas = exp.([log(s) + i * log(alpha) for i in 0:(n - 1)])
+#     return [dt_gausskernel(kernel_dim, sigma) for sigma in sigmas]
+# end
 
-function rectkernel(kernel_dim, kernel_params)
-    n = kernel_dim
-    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
-    T = kernel_params[1] / 2
-    g = zeros(Float64, n)
+# function dp_gauss_expo_kernel(kernel_dim, kernel_params)
+#     s, alpha, n = kernel_params
+#     sigmas = exp.([log(s) + i * log(alpha) for i in 0:(n - 1)])
+#     return [dp_gausskernel(kernel_dim, sigma) for sigma in sigmas]
+# end
+
+function averaging_kernel(avg::RectAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    T = avg.T / 2
+    g = zeros(Float64, avg.kernel_dim)
     g[abs.(t) .<= T] .= 1
     g = g / sum(g)
     return g
 end
 
-averaging_kernel(tp::TimeParams) =
-    averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
-averaging_kernel(dp::DecompParams) =
-    averaging_kernel(dp.tp.kernel_type, dp.tp.kernel_params, dp.tp.kernel_dim)
 
-function averaging_kernel(
-        kernel_type::Symbol,
-        kernel_params::AbstractArray{<:Real},
-        kernel_dim::Integer,
-    )
-    if kernel_type == :gaussian
-        avg_kernel = gausskernel(kernel_dim, kernel_params)
-    elseif kernel_type == :gaussian_exponential
-        avg_kernel = gauss_expo_kernel(kernel_dim, kernel_params)
-    elseif kernel_type == :rect
-        avg_kernel = rectkernel(kernel_dim, kernel_params)
-    else
-        avg_kernel = []
-        throw(ArgumentError("Kernel type $(kernel_type) not implemented"))
-    end
-    return avg_kernel
-end
+averaging_kernel(dp::DecompParams) = averaging_kernel(dp.tp)
+averaging_kernel(tp::TimeParams) = averaging_kernel(tp.kernel)
 
-function dt_fft(x::AbstractArray{<:Real})
-    N = length(x)
-    if iseven(N)
-        Nh = div(N, 2)
-        k = collect(Complex(0, 2pi / N) * ((-Nh + 1):Nh))
-        k[end] = 0
-        circshift!(k, -Nh + 1)
-    else
-        Nh = div(N, 2)
-        k = collect(Complex(0, 2pi / N) * ((-Nh):Nh))
-        circshift!(k, -Nh)
-    end
-    return real(ifft(fft(x) .* k))
-end
+dt_averaging_kernel(dp::DecompParams) = dt_averaging_kernel(dp.tp)
+dt_averaging_kernel(tp::TimeParams) = dt_averaging_kernel(tp.kernel)
 
-dt_averaging_kernel(tp::TimeParams) =
-    dt_averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
-dt_averaging_kernel(dp::DecompParams) =
-    dt_averaging_kernel(dp.tp.kernel_type, dp.tp.kernel_params, dp.tp.kernel_dim)
+dp_averaging_kernel(dp::DecompParams) = dp_averaging_kernel(dp.tp)
+dp_averaging_kernel(tp::TimeParams) = dp_averaging_kernel(tp.kernel)
 
-function dt_averaging_kernel(
-        kernel_type::Symbol,
-        kernel_params::AbstractArray{<:Real},
-        kernel_dim::Integer,
-    )
-    if kernel_type == :gaussian
-        avg_kernel = dt_gausskernel(kernel_dim, kernel_params)
-    elseif kernel_type == :gaussian_exponential
-        avg_kernel = dt_gauss_expo_kernel(kernel_dim, kernel_params)
-    else
-        avg_kernel = []
-        throw(ArgumentError("dt Kernel type $(kernel_type) not implemented"))
-    end
-    return avg_kernel
-end
+dt_averaging_kernel(avg::AvgKernel) = throw(error("No time differentiation for $(typeof(avg))"))
+dp_averaging_kernel(avg::AvgKernel) = throw(error("No parameter differentiation for $(typeof(avg))"))
 
-dp_averaging_kernel(tp::TimeParams) =
-    dp_averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
-dp_averaging_kernel(dp::DecompParams) =
-    dp_averaging_kernel(dp.tp.kernel_type, dp.tp.kernel_params, dp.tp.kernel_dim)
-
-function dp_averaging_kernel(
-        kernel_type::Symbol,
-        kernel_params::AbstractArray{<:Real},
-        kernel_dim::Integer,
-    )
-    if kernel_type == :gaussian
-        avg_kernel = dp_gausskernel(kernel_dim, kernel_params)
-    elseif kernel_type == :gaussian_exponential
-        avg_kernel = dp_gauss_expo_kernel(kernel_dim, kernel_params)
-    else
-        avg_kernel = []
-        throw(ArgumentError("dt Kernel type $(kernel_type) not implemented"))
-    end
-    return avg_kernel
-end
+# function dt_fft(x::AbstractArray{<:Real})
+#     N = length(x)
+#     if iseven(N)
+#         Nh = div(N, 2)
+#         k = collect(Complex(0, 2pi / N) * ((-Nh + 1):Nh))
+#         k[end] = 0
+#         circshift!(k, -Nh + 1)
+#     else
+#         Nh = div(N, 2)
+#         k = collect(Complex(0, 2pi / N) * ((-Nh):Nh))
+#         circshift!(k, -Nh)
+#     end
+#     return real(ifft(fft(x) .* k))
+# end
 
 function GMWFrame(sp::ScaleParams)
     if isnothing(sp.frame)

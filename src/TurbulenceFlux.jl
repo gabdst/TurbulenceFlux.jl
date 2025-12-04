@@ -197,5 +197,9 @@ export DecompParams,
     error_mask,
     freeframe!,
     setframe!,
-    zero_crossings
+    zero_crossings,
+    AvgKernel,
+    GaussAvg,
+    ScaleAvg,
+    RectAvg
 end

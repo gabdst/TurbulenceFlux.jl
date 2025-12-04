@@ -5,8 +5,6 @@ fs = 20
 z_d = 10.0
 aux = AuxVars(; fs, z_d)
 kernel_dim = wave_dim = work_dim
-kernel_type = :gaussian
-kernel_params = [1024]
 
 cp = CorrectionParams()
 empty!(cp.corrections)
@@ -25,7 +23,8 @@ df[:CO2] = x
 df[:H2O] = x / TurbulenceFlux.LAMBDA
 
 dt = 1
-tp = TimeParams(kernel_dim, kernel_type, kernel_params; padding = kernel_dim, dt)
+avg_kernel = GaussAvg(kernel_dim, 1024)
+tp = TimeParams(avg_kernel; padding = kernel_dim, dt)
 tp_aux = tp
 
 method = ReynoldsEstimation(; tp, tp_aux)
@@ -60,7 +59,7 @@ wmax = pi
 sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
 
 dt = 1
-tp = TimeParams(kernel_dim, kernel_type, kernel_params; padding = kernel_dim, dt)
+tp = TimeParams(avg_kernel; padding = kernel_dim, dt)
 tp_aux = tp
 
 dp = DecompParams(sp, tp)

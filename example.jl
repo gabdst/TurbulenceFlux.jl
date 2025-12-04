@@ -8,49 +8,7 @@ Pkg.add(["JLD2", "WGLMakie", "Statistics"])
 using JLD2
 using WGLMakie
 using Statistics
-
-## Data Loading
-# Some data available at https://drive.proton.me/urls/0NHRADNYTC#5q9CLk4V0sbA
-data = jldopen("data_sample.hdf5")
-dates = keys(data)
-d = first(dates)
-signals = data[d]["Signals"]
-# Converting to Dictionnary
-signals = Dict(Symbol(k) => signals[k] for k in keys(signals))
-
-## Parameters Definition
-work_dim = length(signals[:W])
-# Auxilliaryi variables
-fs = 20 # Hz, sampling frequency
-z_d = 10  # m, displacement height
-aux = AuxVars(; fs, z_d)
-cp = CorrectionParams()
-# Wavelet Parameters
-wave_dim = 24 * 60 * 60 * fs # max wavelet duration of 10 hours
-b = 1
-g = 3
-J = floor(Int, log2(wave_dim))
-Q = 2
-wmin = 2pi * (2 * fs / wave_dim) / fs # The lowest fourier frequency is fs/wave_dim
-wmax = 2pi * (fs / 2) / fs
-sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
-
-# Time-Averaging Parameters
-kernel_dim = 24 * 60 * 60 * fs # Max averaging length of 10 hours
-kernel_type = :gaussian
-kernel_params = [30 * 20 * fs] # 30 min averaging time
-dt = fs * 60 # 1minute time sampling
-tp = TimeParams(kernel_dim, kernel_type, kernel_params; dt)
-dp = DecompParams(sp, tp)
-# Using the same Time-Averaging parameters for auxilliary estimates ( V_SIGMA,W_SIGMA,USTAR,RHO, etc...)
-tp_aux = tp
-
-# Method Parameters
-method = TurbuLaplacian(; tr_tau = 1.0e-3, tr_dtau = 1, dp, tp_aux)
-
-# Estimation
-results = estimate_flux(signals, aux, cp, method)
-
+## Some Plotting Recipes
 cmap_flux = Makie.Reverse(:bam)
 cmap_tau = Makie.Reverse(:roma)
 function plot_contour(
@@ -84,10 +42,50 @@ function plot_contour_line(args...; kwargs...)
     return g, ax, ax_line
 end
 
-#
+########## DATA SAMPLES #############
+# Some data available at https://drive.proton.me/urls/0NHRADNYTC#5q9CLk4V0sbA
+data = jldopen("data_sample.hdf5")
+dates = keys(data)
+d = first(dates)
+signals = data[d]["Signals"]
+# Converting to Dictionnary
+signals = Dict(Symbol(k) => signals[k] for k in keys(signals))
+
+### FLUX ESTIMATION PARAMETERS ######
+work_dim = length(signals[:W])
+# Auxilliary variables
+fs = 20 # Hz, sampling frequency
+z_d = 10  # m, displacement height
+aux = AuxVars(; fs, z_d)
+cp = CorrectionParams()
+# Wavelet Parameters
+wave_dim = 24 * 60 * 60 * fs # max wavelet duration of 10 hours
+b = 1
+g = 3
+J = floor(Int, log2(wave_dim))
+Q = 2
+wmin = 2pi * (2 * fs / wave_dim) / fs # The lowest fourier frequency is fs/wave_dim
+wmax = 2pi * (fs / 2) / fs
+sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+
+# Time-Averaging Parameters
+kernel_dim = 24 * 60 * 60 * fs # Max averaging length of 10 hours
+sigma = 30 * 60 * fs # 30 min averaging
+avg_kernel = GaussAvg(kernel_dim, sigma)
+dt = fs * 60 # 1 minute time sampling
+tp = TimeParams(avg_kernel; dt)
+dp = DecompParams(sp, tp)
+# Using the same Time-Averaging parameters for auxilliary estimates ( V_SIGMA,W_SIGMA,USTAR,RHO, etc...)
+tp_aux = tp
+
+# Method Parameters
+method = TurbuLaplacian(; tr_tau = 1.0e-3, tr_dtau = 1, dp, tp_aux)
+
+######## FLUX ESTIMATION #######
+results = estimate_flux(signals, aux, cp, method)
 tauw = results.estimate.TAUW_TF
 dtauw = results.estimate.DTAUW_TF
-FC = results.estimate.FC
+FC = vec(results.estimate.FC)
 FC_TF = results.estimate.FC_TF
 tauw_m = results.estimate.TAUW_TF_M
 
