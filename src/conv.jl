@@ -185,6 +185,21 @@ struct ScaleAvg <: AvgKernel
     scales::Vector{<:AvgKernel}
 end
 
+ScaleAvg(sp::ScaleParams, args...; kwargs...) = ScaleAvg(GMWFrame(sp), args...; kwargs...)
+
+function ScaleAvg(
+        gmw::GMWFrame,
+        alpha::Real;
+        min_sigma = 1,
+        max_sigma = gmw.wave_dim,
+        kernel_dim = gmw.wave_dim
+    )
+    sigmas = [ min(max(alpha * s, min_sigma), max_sigma) for s in gmw.sigmas ]
+    scales = [GaussAvg(kernel_dim, s) for s in sigmas]
+    avg_kernel = ScaleAvg(kernel_dim, scales)
+    return avg_kernel
+end
+
 """
     TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
 
