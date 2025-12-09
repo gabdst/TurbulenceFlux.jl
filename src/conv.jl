@@ -116,7 +116,7 @@ struct GMWFrame
 end
 
 """
-    ScaleParams(b, g, J, Q, wmin, wmax, wave_dim, analytic, padding, frame)
+    ScaleParams(b, g, J, Q, fmin, fmax, wave_dim, analytic, padding, frame)
 
 A struct to hold parameters for time-frequency scale decomposition.
 
@@ -125,8 +125,8 @@ A struct to hold parameters for time-frequency scale decomposition.
 - `g::Real`: Second parameter of the Generalized Morse Wavelet (e.g. `3`)
 - `J::Int`: Number of octaves (e.g. `floor(Int(log2(wave_dim)))`)
 - `Q::Int`: Number of inter-octaves (e.g. `3`)
-- `wmin::Real`: Minimum frequency pulsation (e.g. `2*pi/wave_dim`)
-- `wmax::Real`: Maximum frequency pulsation (e.g. `pi`)
+- `fmin::Real`: Minimum frequency (e.g. `2/wave_dim`)
+- `fmax::Real`: Maximum frequency (e.g. `1/2`)
 - `wave_dim::Int`: Size of the wavelet transform. 
 - `analytic::Bool`: If `true`, uses analytic wavelets.
 - `padding::Int`: Zero-padding length for the transform.
@@ -137,8 +137,8 @@ mutable struct ScaleParams
     const g::Real
     const J::Int
     const Q::Int
-    const wmin::Real
-    const wmax::Real
+    const fmin::Real
+    const fmax::Real
     const wave_dim::Int
     const analytic::Bool
     const padding::Int
@@ -150,8 +150,8 @@ ScaleParams(
     g,
     J,
     Q,
-    wmin,
-    wmax,
+    fmin,
+    fmax,
     wave_dim;
     analytic = false,
     padding = 0,
@@ -160,8 +160,8 @@ ScaleParams(
     g,
     J,
     Q,
-    wmin,
-    wmax,
+    fmin,
+    fmax,
     wave_dim,
     analytic,
     padding,
@@ -237,12 +237,12 @@ end
 ScaleParams(dp::DecompParams) = dp.sp
 TimeParams(dp::DecompParams) = dp.tp
 
-function wavelet_parameters(b, g, J, Q, wmin, wmax)
-    return GMW.gmw_grid(b, g, J, Q, wmin, wmax, 0)
+function wavelet_parameters(b, g, J, Q, fmin, fmax)
+    return GMW.gmw_grid(b, g, J, Q, 2pi * fmin, 2pi * fmax, 0)
 end
-wavelet_parameters(; b, g, J, Q, wmin, wmax) = wavelet_parameters(b, g, J, Q, wmin, wmax)
+wavelet_parameters(; b, g, J, Q, fmin, fmax) = wavelet_parameters(b, g, J, Q, fmin, fmax)
 wavelet_parameters(sp::ScaleParams) =
-    wavelet_parameters(sp.b, sp.g, sp.J, sp.Q, sp.wmin, sp.wmax)
+    wavelet_parameters(sp.b, sp.g, sp.J, sp.Q, sp.fmin, sp.fmax)
 wavelet_parameters(dp::DecompParams) = wavelet_parameters(ScaleParams(dp.sp))
 
 frequency_peaks(dp::DecompParams) = frequency_peaks(ScaleParams(dp))

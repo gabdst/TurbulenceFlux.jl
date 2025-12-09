@@ -60,9 +60,9 @@ end
     g = 3
     J = 6
     Q = 2
-    wmin = 0
-    wmax = pi
-    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+    fmin = 0
+    fmax = 0.5
+    sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim)
     gmw = GMWFrame(sp)
     @test sp.frame === gmw
     freeframe!(sp)
@@ -78,7 +78,7 @@ end
     @test isapprox(spec, target)
 
     # Analytic case
-    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim; analytic = true)
+    sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim; analytic = true)
     gmw = GMWFrame(sp)
     # Test Unit Power
     power = sum(x -> norm(x)^2, gmw.frame)
@@ -104,9 +104,9 @@ end
     g = 3
     J = 6
     Q = 2
-    wmin = 0
-    wmax = pi
-    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+    fmin = 0
+    fmax = 0.5
+    sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim)
     gmw = GMWFrame(sp)
     x = vcat(1, zeros(work_dim - 1))
     cconv = CConv(Float64, work_dim)
@@ -174,13 +174,13 @@ end
         g = 3
         J = 6
         Q = 2
-        wmin = 0
-        wmax = pi
+        fmin = 0
+        fmax = pi
         x1 = circshift(vcat(1, zeros(work_dim - 1)), div(work_dim, 2)) # Center the signal
         x2 = circshift(x1, 1)
         x3 = x2 + x1
         avg_kernel = GaussAvg(kernel_dim, kernel_dim / 10)
-        sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+        sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim)
         tp = TimeParams(avg_kernel)
         dp = DecompParams(sp, tp)
         gmw = GMWFrame(dp)

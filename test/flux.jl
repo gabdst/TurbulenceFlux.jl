@@ -54,9 +54,9 @@ b = 1
 g = 3
 J = floor(Int, log2(wave_dim))
 Q = 2
-wmin = 4pi / wave_dim
-wmax = pi
-sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+fmin = 4pi / wave_dim
+fmax = pi
+sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim)
 
 dt = 1
 tp = TimeParams(avg_kernel; padding = kernel_dim, dt)
@@ -85,4 +85,4 @@ results = estimate_flux(; df, aux, cp, method)
     rtol = 0.05,
 )
 
-@test isinteger(method_timestep(method, work_dim, wmin / (2pi)))
+@test isinteger(method_timestep(method, work_dim, fmin))

@@ -64,9 +64,9 @@ b = 1
 g = 3
 J = floor(Int, log2(wave_dim))
 Q = 2
-wmin = 2pi * (2 * fs / wave_dim) / fs # The lowest fourier frequency is fs/wave_dim
-wmax = 2pi * (fs / 2) / fs
-sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+fmin = (2 * fs / wave_dim) / fs # The lowest fourier frequency is fs/wave_dim
+fmax = (fs / 2) / fs
+sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim)
 
 # Time-Averaging Parameters
 kernel_dim = 24 * 60 * 60 * fs # Max averaging length of 10 hours
