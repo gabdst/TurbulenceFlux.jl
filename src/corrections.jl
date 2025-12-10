@@ -116,6 +116,14 @@ Flag NaN values in an array `x` and return the corresponding Boolean vector.
 """
 flag_nan(x::AbstractArray{<:Real}) = isnan.(x)
 
+
+"""
+    flag_ec_nan(x::AbstractArray{<:Real})
+
+Flag -9999 values in array `x` an return the corresponding Boolean vector.
+"""
+flag_ec_nan(x::AbstractArray{<:Real}) = x .== -9999
+
 """
     interpolate_errors!(x::AbstractArray{<:Real}, m::AbstractVector{Bool})
 
@@ -305,7 +313,8 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
     if :despiking in cp.corrections
         for var in var_names
             # TODO: check QC vars in df if available
-            mask = flag_nan(df[var])
+            mask = flag_ec_nan(df[var])
+            mask = flag_nan(df[var]) .|| mask
             mask = flag_spikes(df[var], cp.window_size_despiking) .|| mask
             update_quality_control!(qc, var, mask)
             interpolate_errors!(df[var], mask)
