@@ -277,6 +277,8 @@ function dp_averaging_kernel(avg::GaussAvg)
 end
 
 averaging_kernel(avg::ScaleAvg) = averaging_kernel.(avg.scales)
+dp_averaging_kernel(avg::ScaleAvg) = dp_averaging_kernel.(avg.scales)
+dt_averaging_kernel(avg::ScaleAvg) = dt_averaging_kernel.(avg.scales)
 
 # function gauss_expo_kernel(kernel_dim, kernel_params)
 #     s, alpha, n = kernel_params
