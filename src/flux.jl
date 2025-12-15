@@ -76,6 +76,7 @@ A `FluxEstimationMethod` that estimates turbulent fluxes by thresholding the Rey
 - `dp::DecompParams`: Parameters for time-frequency decomposition.
 - `tp_aux::TimeParams`: Parameters for estimating auxiliary variables (e.g., mean wind speed, density).
 - `tr_tau::Real`: Threshold value for isolating vertical turbulent transport.
+- `tp_tau::DecompParams=dp.tp`: Alternative TimeParams for `TAUW_TF`
 - `sensitivity::Bool=true`: If `true`, computes sensitivity to time and averaging parameters.
 
 # Output
@@ -101,6 +102,7 @@ When passed to `estimate_flux`, this method returns a `FluxEstimate{ReynoldsEsti
     tr_tau::Real
     dp::DecompParams
     tp_aux::TimeParams
+    tp_tau::TimeParams = dp.tp
     sensitivity::Bool = true
 end
 
@@ -115,7 +117,7 @@ A `FluxEstimationMethod` that estimates turbulent fluxes by applying thresholdin
 - `tp_aux::TimeParams`: Parameters for estimating auxiliary variables (e.g., mean wind speed, density).
 - `tr_tau::Real`: Threshold for isolating vertical turbulent transport.
 - `tr_dtau::Real`: Threshold for isolating zeros in the Laplacian of `TAUW_TF`.
-- `tp_tau::DecompParams`: Alternative TimeParams for `TAUW_TF`
+- `tp_tau::DecompParams=dp.tp`: Alternative TimeParams for `TAUW_TF`
 - `span::Real=0.25`: Parameter influencing the locally weighted regression algorithm.
 - `sensitivity::Bool=true`: If `true`, computes sensitivity to time and averaging parameters.
 
@@ -506,6 +508,7 @@ Estimate fluxes using input data, auxiliary variables, correction and method par
 - `::FluxEstimate`: An object containing the estimated fluxes and associated metadata.
 """
 estimate_flux(; df, aux, cp, method) = estimate_flux(df, aux, cp, method)
+estimate_flux(df, aux::AuxVars, cp::CorrectionParams, method::FluxEstimationMethod) = estimate_flux(to_dict(df), aux, cp, method)
 function estimate_flux(
         df::Dict,
         aux::AuxVars,
@@ -583,7 +586,7 @@ function estimate_flux(
     df, qc = apply_correction!(df, cp, aux)
     auxvars = estimate_auxvar(df, tp_aux, qc)
     merge!(estimate, auxvars)
-    turbuvar = estimate_turbuvar(df, tp, qc)
+    turbuvar = estimate_turbuvar(df, tp_aux, qc)
     merge!(estimate, turbuvar)
 
 
@@ -610,10 +613,10 @@ function estimate_flux(
     scalo_turbu_qc = qc_cross_scalogram(qc, C_turbu, dp_tau)
     scalo_qc = merge(scalo_flux_qc, scalo_turbu_qc)
     for c in values(C_flux)
-        qc[c] = sparse(abs.(scalo_qc[c]) .> 1.0e-6) .|| qc[:RHO]
+        qc[Symbol(c, :_QC)] = sparse(abs.(scalo_qc[Symbol(c, :_QC)]) .> 1.0e-6) .|| qc[:RHO]
     end
     for c in values(C_turbu)
-        qc[c] = sparse(abs.(scalo_qc[c]) .> 1.0e-6)
+        qc[Symbol(c, :_QC)] = sparse(abs.(scalo_qc[Symbol(c, :_QC)]) .> 1.0e-6)
     end
     qc[:TAUW_TF_QC] = qc[:WW_TF_QC] .|| qc[:UW_TF_QC] .|| qc[:VW_TF_QC]
 
@@ -652,11 +655,11 @@ function estimate_flux(
             for c in keys(dt_scalo)
                 dt_scalo[c] = tofluxunits(dt_scalo[c], estimate[:RHO], c)
             end
+            merge!(scalo, dp_scalo, dt_scalo)
             for c in union(values(C_dp), values(C_dt))
                 var = Symbol(split(string(c), "_TF")[1])
                 estimate[var] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
             end
-            merge!(scalo, dp_scalo, dt_scalo)
         end
     end
     merge!(estimate, scalo)
