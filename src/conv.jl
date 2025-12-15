@@ -105,6 +105,15 @@ function (C::CConv)(
     return copy(C.buff_out)
 end
 
+load_kernel!(
+    C::CConv,
+    kernel::AbstractVector{<:Union{Real, Complex}};
+    flip_kernel = false,
+    load_kernel = true,
+    phase = default_phase_kernel(length(kernel))
+) = _load_kernel!(C, kernel, flip_kernel, phase)
+
+
 struct GMWFrame
     wave_dim::Integer # N
     params::AbstractVector{<:AbstractVector{<:Real}} # a,u,β,γ, Px4
@@ -425,13 +434,13 @@ function zero_crossings(gmw::GMWFrame)
     return zc
 end
 
-function make_mem(C)
-    ckf = collect(Iterators.flatten(keys(C)))
-    ccount = map(k -> (k, count(==(k), ckf)), unique(ckf))
-    filter!(x -> x[2] > 1, ccount)
-    return mem = Dict{Symbol, Any}((k => nothing for (k, v) in ccount))
-end
 
+occurence(s) = sort([k => count(==(k), s) for k in unique(s)], by = x -> x.second, rev = true)
+function make_mem(C, K_MEM)
+    ckf = Iterators.flatten(keys(C))
+    occ = occurence(ckf)[1:K_MEM]
+    return Dict{Symbol, Any}((x.first => nothing for x in occ))
+end
 in_mem(mem, k) = k in keys(mem) && !isnothing(mem[k])
 store!(mem, k, v) = k in keys(mem) && isnothing(mem[k]) ? mem[k] = v : nothing
 
@@ -441,7 +450,8 @@ function cross_scalogram(
         dp::DecompParams,
         frame::Union{AbstractArray{<:AbstractArray{T}}, GMWFrame},
         avg_kernel::Union{AbstractVector{<:Real}, AbstractVector{<:AbstractVector{<:Real}}};
-        K = 2,
+        K_THREADS = min(8, Threads.nthreads()),
+        K_MEM = 1,
         subsampling = true
     ) where {T <: Union{Real, Complex}}
 
@@ -462,37 +472,47 @@ function cross_scalogram(
             throw(error("Number of filters and averaging kernels are not equal"))
     end
     return_type = analytic ? ComplexF64 : Float64
-
-    WaveC = CConv(return_type, work_dim; padding = pad_sp)
-    KernelC = CConv(return_type, work_dim; padding = pad_tp)
-
-    out = Dict(c => Dict() for c in keys(C))
-    for C_p in Iterators.partition(C, K)
-        for (i, gmw) in enumerate(frame)
-            mem = make_mem(C_p)
-            avgk = many_kernels ? avg_kernel[i] : avg_kernel
-            load_kernel = true
-            for (c, _) in C_p
+    out = [ Dict() for _ in 1:K_THREADS]
+    chunks = collect(Iterators.partition(1:length(frame), cld(length(frame), K_THREADS)))
+    Threads.@threads for (chunk, d_out) in collect(zip(chunks, out))
+        WaveC = CConv(return_type, work_dim; padding = pad_sp)
+        KernelC = CConv(return_type, work_dim; padding = pad_tp)
+        load_avg_kernel = true
+        for i in chunk
+            mem = make_mem(C, K_MEM)
+            if many_kernels
+                avgk = avg_kernel[i]
+                load_kernel!(KernelC, avgk)
+            else
+                avgk = avg_kernel
+                if load_avg_kernel
+                    load_kernel!(KernelC, avgk)
+                    load_avg_kernel = false
+                end
+            end
+            gmw = frame[i]
+            load_kernel!(WaveC, gmw)
+            for c in keys(C)
                 (n, m) = c
                 x = L[n]
                 y = L[m]
-                x_i = in_mem(mem, n) ? mem[n] : WaveC(x, gmw; load_kernel)
+                x_i = in_mem(mem, n) ? mem[n] : WaveC(x, gmw; load_kernel = false)
                 store!(mem, n, x_i)
-                y_i = in_mem(mem, m) ? mem[m] : WaveC(y, gmw; load_kernel)
+                y_i = in_mem(mem, m) ? mem[m] : WaveC(y, gmw; load_kernel = false)
                 store!(mem, m, y_i)
-                f = KernelC(x_i .* y_i, avgk; load_kernel)
+                f = KernelC(x_i .* y_i, avgk; load_kernel = false)
                 if subsampling
                     f = f[time_sampling]
                 end
-                out[c][i] = f
-                load_kernel = false
+                d_out[(c, i)] = f
             end
         end
     end
+    out = merge(out...)
     # Output matrices
     out_hcat = Dict()
     for c in keys(C)
-        cs = [out[c][i] for i in 1:length(frame)]
+        cs = [out[(c, i)] for i in 1:length(frame)]
         out_hcat[C[c]] = stack(cs)
     end
     return out_hcat
