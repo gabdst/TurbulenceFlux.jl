@@ -237,24 +237,28 @@ function normalized_frequency(
 end
 
 """
-    sigmas_wind([u,v,w],tp::TimeParams)
+    mean_std_wind([u,v,w],tp::TimeParams)
 
-Compute the standard deviations `U_SIGMA, V_SIGMA, W_SIGMA`.
+Compute the mean and standard deviations `U_MEAN, U_SIGMA, V_MEAN, ...`.
 """
-function sigmas_wind(wind_speeds, tp::TimeParams)
+mean_std_wind(u, v, w, tp::TimeParams) = mean_std_wind([u, v, w], tp)
+function mean_std_wind(wind_speeds, tp::TimeParams)
     length(wind_speeds) == 3 ||
         throw(error("Three wind speed signals expected, got $(length(wind_speeds))"))
     allequal(length, wind_speeds) ||
         throw(error("Got wind speed signals of different sizes"))
     u, v, w = wind_speeds
     subsampling = false
-    up = u - average(u, tp, subsampling)
-    vp = v - average(v, tp, subsampling)
-    wp = w - average(w, tp, subsampling)
+    U_MEAN = average(u, tp, subsampling)
+    V_MEAN = average(v, tp, subsampling)
+    W_MEAN = average(w, tp, subsampling)
+    up = u - U_MEAN
+    vp = v - V_MEAN
+    wp = w - W_MEAN
     U_SIGMA = sqrtz.(average(up .^ 2, tp))
     V_SIGMA = sqrtz.(average(vp .^ 2, tp))
     W_SIGMA = sqrtz.(average(wp .^ 2, tp))
-    return U_SIGMA, V_SIGMA, W_SIGMA
+    return U_MEAN, V_MEAN, W_MEAN, U_SIGMA, V_SIGMA, W_SIGMA
 end
 
 """
@@ -464,15 +468,22 @@ function estimate_turbuvar(df::Dict, tp::TimeParams, qc::QualityControl)
     turbuvar[:USTAR] = USTAR
     update_quality_control!(qc, :USTAR, mask)
 
-    U_SIGMA, V_SIGMA, W_SIGMA = sigmas_wind([df[:U], df[:V], df[:W]], tp)
+    U_MEAN, V_MEAN, W_MEAN, U_SIGMA, V_SIGMA, W_SIGMA = mean_std_wind(df[:U], df[:V], df[:W], tp)
     turbuvar[:U_SIGMA] = U_SIGMA
+    turbuvar[:U_MEAN] = U_MEAN
     update_quality_control!(qc, :U_SIGMA, error_mask(tp, qc[:U]))
+    update_quality_control!(qc, :U_MEAN, error_mask(tp, qc[:U]))
 
     turbuvar[:V_SIGMA] = V_SIGMA
+    turbuvar[:V_MEAN] = V_MEAN
     update_quality_control!(qc, :V_SIGMA, error_mask(tp, qc[:V]))
+    update_quality_control!(qc, :V_MEAN, error_mask(tp, qc[:V]))
+
 
     turbuvar[:W_SIGMA] = W_SIGMA
+    turbuvar[:W_MEAN] = W_MEAN
     update_quality_control!(qc, :W_SIGMA, error_mask(tp, qc[:W]))
+    update_quality_control!(qc, :W_MEAN, error_mask(tp, qc[:W]))
     return turbuvar
 end
 
@@ -588,8 +599,6 @@ function estimate_flux(
     merge!(estimate, auxvars)
     turbuvar = estimate_turbuvar(df, tp_aux, qc)
     merge!(estimate, turbuvar)
-
-
     C_turbu = Dict((:W, :W) => :WW_TF, (:W, :U) => :UW_TF, (:W, :V) => :VW_TF)
     C_flux = Dict((:W, :TA) => :H_TF)
     if :CO2 in var_names
