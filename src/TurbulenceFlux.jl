@@ -29,6 +29,16 @@ const mandatory_variables = (;
     mandatory_temp_variables...,
 )
 
+const limits_variables = (;
+    TA = (-40, 50),
+    T_SONIC = (-40, 50),
+    W = (-5, 5),
+    U = (-30, 30),
+    CO2 = (200, 900),
+    H2O = (0, 40),
+    CH4 = (1, 1000),
+)
+
 const gas_variables = (; CO2 = u"μmol/mol", H2O = u"mmol/mol")
 const output_variables = (;
     TIMESTAMP = NoUnits,

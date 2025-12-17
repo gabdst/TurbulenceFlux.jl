@@ -302,6 +302,11 @@ struct ErrorRotationAmbiguous <: Exception
     end
 end
 
+flag_out_of_limits(x, var) = begin
+    lmin, lmax = getindex(limits_variables, var)
+    return x .< lmin .|| x .> lmax
+end
+
 function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
     var_names = get_var_names(df)
     work_dim = length(df[:TIMESTAMP])
@@ -313,7 +318,8 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
     if :despiking in cp.corrections
         for var in var_names
             # TODO: check QC vars in df if available
-            mask = flag_ec_nan(df[var])
+            mask = flag_out_of_limits(df[var], var)
+            mask = flag_ec_nan(df[var]) .|| mask
             mask = flag_nan(df[var]) .|| mask
             mask = flag_spikes(df[var], cp.window_size_despiking) .|| mask
             update_quality_control!(qc, var, mask)
