@@ -303,8 +303,12 @@ struct ErrorRotationAmbiguous <: Exception
 end
 
 flag_out_of_limits(x, var) = begin
-    lmin, lmax = getindex(limits_variables, var)
-    return x .< lmin .|| x .> lmax
+    if var in keys(limits_variables)
+        lmin, lmax = getindex(limits_variables, var)
+        return x .< lmin .|| x .> lmax
+    else
+        return falses(size(x))
+    end
 end
 
 function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
