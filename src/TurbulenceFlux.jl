@@ -211,5 +211,6 @@ export DecompParams,
     AvgKernel,
     GaussAvg,
     ScaleAvg,
-    RectAvg
+    RectAvg,
+    apply_correction!
 end
