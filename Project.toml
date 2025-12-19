@@ -4,6 +4,7 @@ version = "0.4.1"
 authors = ["gabriel destouet <gabriel.destouet@protonmail.com>"]
 
 [deps]
+Bessels = "0e736298-9ec6-45e8-9647-e4fc86a2fe38"
 DataInterpolations = "82cc6244-b520-54b8-b5a6-8a565e85f1d0"
 FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
 GeneralizedMorseWavelets = "b8d14031-e142-472f-b25f-bd9018bb5b90"
@@ -21,6 +22,7 @@ StatsFuns = "4c63d2b9-4356-54db-8cca-17b64c39e42c"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [compat]
+Bessels = "0.2.8"
 DataInterpolations = "8.6"
 FFTW = "1.10"
 GeneralizedMorseWavelets = "0.1.0"

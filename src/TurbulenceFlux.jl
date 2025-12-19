@@ -10,7 +10,8 @@ using LinearAlgebra,
     SparseArrays,
     PhysicalConstants,
     Unitful,
-    DataInterpolations
+    DataInterpolations,
+    Bessels
 import GeneralizedMorseWavelets as GMW
 import Loess
 
@@ -210,6 +211,7 @@ export DecompParams,
     zero_crossings,
     AvgKernel,
     GaussAvg,
+    KaiserAvg,
     ScaleAvg,
     RectAvg,
     apply_correction!

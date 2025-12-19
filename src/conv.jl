@@ -184,6 +184,13 @@ struct GaussAvg <: AvgKernel
     sigma::Float64
 end
 
+struct KaiserAvg <: AvgKernel
+    kernel_dim::Integer
+    T::Float64
+    beta::Float64
+end
+KaiserAvg(kernel_dim, T; beta = 14) = KaiserAvg(kernel_dim, T, beta)
+
 struct RectAvg <: AvgKernel
     kernel_dim::Integer
     T::Float64
@@ -288,6 +295,40 @@ end
 averaging_kernel(avg::ScaleAvg) = averaging_kernel.(avg.scales)
 dp_averaging_kernel(avg::ScaleAvg) = dp_averaging_kernel.(avg.scales)
 dt_averaging_kernel(avg::ScaleAvg) = dt_averaging_kernel.(avg.scales)
+
+function averaging_kernel(avg::KaiserAvg)
+    N = avg.kernel_dim - 1
+    a = N / avg.T
+    a /= 3.666 # Constant value set to relate T to the size of the main lobe, it was calculated by looking at the number of samples above exp(-0.5) after normalizing the window with its maximum
+    t = 2 * (0:N) / N .- 1
+    g = similar(t)
+    for i in 1:N
+        x = (a * t[i])^2
+        if x > 1
+            g[i] = 0
+        else
+            g[i] = besseli(0, avg.beta * sqrt(1 - x)) / besseli(0, avg.beta)
+        end
+    end
+    g = g / sum(g)
+    return g
+end
+
+function dt_averaging_kernel(avg::KaiserAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    g = _gauss.(t, avg.sigma)
+    dg = _dtgauss.(t, avg.sigma)
+    return g = dg / sum(g)
+end
+
+function dp_averaging_kernel(avg::KaiserAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    g = _gauss.(t, avg.sigma)
+    dpg = _dpgauss.(t, avg.sigma)
+    s = sum(g)
+    ds = sum(dpg)
+    return g = (s * dpg - ds * g) / s^2
+end
 
 # function gauss_expo_kernel(kernel_dim, kernel_params)
 #     s, alpha, n = kernel_params
