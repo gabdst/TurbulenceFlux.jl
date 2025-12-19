@@ -7,11 +7,11 @@ default_phase_kernel(kernel_dim) =
     iseven(kernel_dim) ? div(kernel_dim, 2) - 1 : div(kernel_dim, 2)
 _copy_real!(x::AbstractArray{Float64}, y::AbstractArray{ComplexF64}) = map!(real, x, y)
 
-mutable struct CConv{T<:Union{Float64,ComplexF64}}
+mutable struct CConv{T <: Union{Float64, ComplexF64}}
     const input_dim::Int64
     const output_dim::Int64
     const padding::Int64
-    const crop_range::Tuple{Int64,Int64}
+    const crop_range::Tuple{Int64, Int64}
     # Internals
     const buff_in::Vector{ComplexF64}
     const pfft_in::AbstractFFTs.Plan{ComplexF64}
@@ -22,16 +22,16 @@ mutable struct CConv{T<:Union{Float64,ComplexF64}}
 end
 
 function CConv(
-    ::Type{T},
-    input_dim::Int64;
-    padding = 0,
-    crop_range = (1, input_dim),
-) where {T<:Union{Float64,ComplexF64}}
+        ::Type{T},
+        input_dim::Int64;
+        padding = 0,
+        crop_range = (1, input_dim),
+    ) where {T <: Union{Float64, ComplexF64}}
     conv_dim = (input_dim + padding)
-    # Setting up internals in keywords 
-    buff_in = zeros(ComplexF64,conv_dim)
+    # Setting up internals in keywords
+    buff_in = zeros(ComplexF64, conv_dim)
     pfft_in = plan_fft!(buff_in)
-    buff_ker = zeros(ComplexF64,conv_dim)
+    buff_ker = zeros(ComplexF64, conv_dim)
     pfft_ker = plan_fft!(buff_ker)
     pifft_in = plan_ifft!(buff_in)
     output_dim = crop_range[2] - crop_range[1] + 1
@@ -75,8 +75,8 @@ end
 function _conv!(C::CConv)
     # In place multiplication in buff_in
     C.buff_in .*= C.buff_ker
-    C.pifft_in * C.buff_in# buff_in place ifft
-    _crop_out!(C) # Crop in buff_out!
+    C.pifft_in * C.buff_in # buff_in place ifft
+    return _crop_out!(C) # Crop in buff_out!
 end
 
 function _crop_out!(C::CConv)
@@ -91,12 +91,12 @@ function _crop_out!(C::CConv)
 end
 
 function (C::CConv)(
-    X::AbstractArray{<:Real},
-    kernel::AbstractVector{<:Union{Real,Complex}};
-    flip_kernel = false,
-    load_kernel = true,
-    phase = default_phase_kernel(length(kernel)),
-)
+        X::AbstractArray{<:Real},
+        kernel::AbstractVector{<:Union{Real, Complex}};
+        flip_kernel = false,
+        load_kernel = true,
+        phase = default_phase_kernel(length(kernel)),
+    )
     _load_sig!(C, X)
     if load_kernel
         _load_kernel!(C, kernel, flip_kernel, phase)
@@ -105,10 +105,19 @@ function (C::CConv)(
     return copy(C.buff_out)
 end
 
+load_kernel!(
+    C::CConv,
+    kernel::AbstractVector{<:Union{Real, Complex}};
+    flip_kernel = false,
+    load_kernel = true,
+    phase = default_phase_kernel(length(kernel))
+) = _load_kernel!(C, kernel, flip_kernel, phase)
+
+
 struct GMWFrame
     wave_dim::Integer # N
     params::AbstractVector{<:AbstractVector{<:Real}} # a,u,β,γ, Px4
-    frame::AbstractVector{<:AbstractVector{<:Union{Real,Complex}}} # (P+1)xN
+    frame::AbstractVector{<:AbstractVector{<:Union{Real, Complex}}} # (P+1)xN
     freq_peaks::Vector{Float64} # P+1
     sigmas::Array{Float64} # P+1
     selfdual::Bool
@@ -116,7 +125,7 @@ struct GMWFrame
 end
 
 """
-    ScaleParams(b, g, J, Q, wmin, wmax, wave_dim, analytic, padding, frame)
+    ScaleParams(b, g, J, Q, fmin, fmax, wave_dim, analytic, padding, frame)
 
 A struct to hold parameters for time-frequency scale decomposition.
 
@@ -125,8 +134,8 @@ A struct to hold parameters for time-frequency scale decomposition.
 - `g::Real`: Second parameter of the Generalized Morse Wavelet (e.g. `3`)
 - `J::Int`: Number of octaves (e.g. `floor(Int(log2(wave_dim)))`)
 - `Q::Int`: Number of inter-octaves (e.g. `3`)
-- `wmin::Real`: Minimum frequency pulsation (e.g. `2*pi/wave_dim`)
-- `wmax::Real`: Maximum frequency pulsation (e.g. `pi`)
+- `fmin::Real`: Minimum frequency (e.g. `2/wave_dim`)
+- `fmax::Real`: Maximum frequency (e.g. `1/2`)
 - `wave_dim::Int`: Size of the wavelet transform. 
 - `analytic::Bool`: If `true`, uses analytic wavelets.
 - `padding::Int`: Zero-padding length for the transform.
@@ -137,12 +146,12 @@ mutable struct ScaleParams
     const g::Real
     const J::Int
     const Q::Int
-    const wmin::Real
-    const wmax::Real
+    const fmin::Real
+    const fmax::Real
     const wave_dim::Int
     const analytic::Bool
     const padding::Int
-    frame::Ref{GMWFrame}
+    frame::Union{Nothing, GMWFrame}
 end
 
 ScaleParams(
@@ -150,8 +159,8 @@ ScaleParams(
     g,
     J,
     Q,
-    wmin,
-    wmax,
+    fmin,
+    fmax,
     wave_dim;
     analytic = false,
     padding = 0,
@@ -160,14 +169,45 @@ ScaleParams(
     g,
     J,
     Q,
-    wmin,
-    wmax,
+    fmin,
+    fmax,
     wave_dim,
     analytic,
     padding,
-    Ref{GMWFrame}(),
+    nothing
 )
 
+abstract type AvgKernel end
+
+struct GaussAvg <: AvgKernel
+    kernel_dim::Integer
+    sigma::Float64
+end
+
+struct RectAvg <: AvgKernel
+    kernel_dim::Integer
+    T::Float64
+end
+
+struct ScaleAvg <: AvgKernel
+    kernel_dim::Integer
+    scales::Vector{<:AvgKernel}
+end
+
+ScaleAvg(sp::ScaleParams, args...; kwargs...) = ScaleAvg(GMWFrame(sp), args...; kwargs...)
+
+function ScaleAvg(
+        gmw::GMWFrame,
+        alpha::Real;
+        min_sigma = 1,
+        max_sigma = gmw.wave_dim,
+        kernel_dim = gmw.wave_dim
+    )
+    sigmas = [ min(max(alpha * s, min_sigma), max_sigma) for s in gmw.sigmas ]
+    scales = [GaussAvg(kernel_dim, s) for s in sigmas]
+    avg_kernel = ScaleAvg(kernel_dim, scales)
+    return avg_kernel
+end
 
 """
     TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
@@ -175,28 +215,19 @@ ScaleParams(
 A struct to hold parameters for time-domain averaging and sampling.
 
 # Fields
-- `kernel_dim::Int`: Size of the averaging kernel. 
-- `kernel_type::Symbol`: Type of kernel (e.g., `:gaussian`, `:rect`).
-- `kernel_params::AbstractArray{<:Real}`: Parameters defining the kernel (e.g., standard deviation for Gaussian).
+- `kernel::AvgKernel`: type of averaging used. 
 - `dt::Int`: Sampling time step.
 - `padding::Int`: Zero-padding length for the time-domain averaging.
 """
 struct TimeParams
-    kernel_dim::Int
-    kernel_type::Symbol
-    kernel_params::AbstractArray{<:Real}
+    kernel::AvgKernel
     dt::Int
     padding::Int
 end
 
-TimeParams(
-    kernel_dim::Int,
-    kernel_type::Symbol,
-    kernel_params::AbstractArray{<:Real};
-    dt::Int = 1,
-    padding::Int = 0,
-) = TimeParams(kernel_dim, kernel_type, kernel_params, dt, padding)
-
+function TimeParams(avg_kernel::AvgKernel; dt::Int = 1, padding::Int = 0)
+    return TimeParams(avg_kernel, dt, padding)
+end
 
 """
     DecompParams(sp, tp)
@@ -215,32 +246,12 @@ end
 ScaleParams(dp::DecompParams) = dp.sp
 TimeParams(dp::DecompParams) = dp.tp
 
-function DecompParams(;
-    b::Real,
-    g::Real,
-    J::Int,
-    Q::Int,
-    wmin::Real,
-    wmax::Real,
-    wave_dim::Int,
-    kernel_dim::Int,
-    kernel_type::Symbol,
-    kernel_params::AbstractArray{<:Real},
-    dt::Int = 1,
-    analytic::Bool = false,
-    padding::Int = 0,
-)
-    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim; analytic, padding)
-    tp = TimeParams(kernel_dim, kernel_type, kernel_params; dt, padding)
-    return DecompParams(sp, tp)
+function wavelet_parameters(b, g, J, Q, fmin, fmax)
+    return GMW.gmw_grid(b, g, J, Q, 2pi * fmin, 2pi * fmax, 0)
 end
-
-function wavelet_parameters(b, g, J, Q, wmin, wmax)
-    return GMW.gmw_grid(b, g, J, Q, wmin, wmax, 0)
-end
-wavelet_parameters(; b, g, J, Q, wmin, wmax) = wavelet_parameters(b, g, J, Q, wmin, wmax)
+wavelet_parameters(; b, g, J, Q, fmin, fmax) = wavelet_parameters(b, g, J, Q, fmin, fmax)
 wavelet_parameters(sp::ScaleParams) =
-    wavelet_parameters(sp.b, sp.g, sp.J, sp.Q, sp.wmin, sp.wmax)
+    wavelet_parameters(sp.b, sp.g, sp.J, sp.Q, sp.fmin, sp.fmax)
 wavelet_parameters(dp::DecompParams) = wavelet_parameters(ScaleParams(dp.sp))
 
 frequency_peaks(dp::DecompParams) = frequency_peaks(ScaleParams(dp))
@@ -250,167 +261,122 @@ frequency_peaks(sp::ScaleParams) =
 _gauss(t, p) = exp(-0.5 * (t / p) .^ 2)
 _dtgauss(t, p) = -(t / p^2) * _gauss(t, p)
 _dpgauss(t, p) = -(t^2 / p^3) * _gauss(t, p)
-function gausskernel(kernel_dim, kernel_params)
-    p = kernel_params[1]
-    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
-    g = _gauss.(t, p)
+
+function averaging_kernel(avg::GaussAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    g = _gauss.(t, avg.sigma)
     g = g / sum(g)
     return g
 end
 
-function dt_gausskernel(kernel_dim, kernel_params)
-    p = kernel_params[1]
-    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
-    g = _gauss.(t, p)
-    dg = _dtgauss.(t, p)
-    g = dg / sum(g)
+function dt_averaging_kernel(avg::GaussAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    g = _gauss.(t, avg.sigma)
+    dg = _dtgauss.(t, avg.sigma)
+    return g = dg / sum(g)
 end
 
-function dp_gausskernel(kernel_dim, kernel_params)
-    p = kernel_params[1]
-    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
-    g = _gauss.(t, p)
-    dpg = _dpgauss.(t, p)
+function dp_averaging_kernel(avg::GaussAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    g = _gauss.(t, avg.sigma)
+    dpg = _dpgauss.(t, avg.sigma)
     s = sum(g)
     ds = sum(dpg)
-    g = (s * dpg - ds * g) / s^2
+    return g = (s * dpg - ds * g) / s^2
 end
 
-function gauss_expo_kernel(kernel_dim, kernel_params)
-    s, alpha, n = kernel_params
-    sigmas = exp.([log(s) + i * log(alpha) for i = 0:(n-1)])
-    return [gausskernel(kernel_dim, sigma) for sigma in sigmas]
-end
+averaging_kernel(avg::ScaleAvg) = averaging_kernel.(avg.scales)
+dp_averaging_kernel(avg::ScaleAvg) = dp_averaging_kernel.(avg.scales)
+dt_averaging_kernel(avg::ScaleAvg) = dt_averaging_kernel.(avg.scales)
 
-function dt_gauss_expo_kernel(kernel_dim, kernel_params)
-    s, alpha, n = kernel_params
-    sigmas = exp.([log(s) + i * log(alpha) for i = 0:(n-1)])
-    return [dt_gausskernel(kernel_dim, sigma) for sigma in sigmas]
-end
+# function gauss_expo_kernel(kernel_dim, kernel_params)
+#     s, alpha, n = kernel_params
+#     sigmas = exp.([log(s) + i * log(alpha) for i in 0:(n - 1)])
+#     return [gausskernel(kernel_dim, sigma) for sigma in sigmas]
+# end
 
-function dp_gauss_expo_kernel(kernel_dim, kernel_params)
-    s, alpha, n = kernel_params
-    sigmas = exp.([log(s) + i * log(alpha) for i = 0:(n-1)])
-    return [dp_gausskernel(kernel_dim, sigma) for sigma in sigmas]
-end
+# function dt_gauss_expo_kernel(kernel_dim, kernel_params)
+#     s, alpha, n = kernel_params
+#     sigmas = exp.([log(s) + i * log(alpha) for i in 0:(n - 1)])
+#     return [dt_gausskernel(kernel_dim, sigma) for sigma in sigmas]
+# end
 
-function rectkernel(kernel_dim, kernel_params)
-    n = kernel_dim
-    t = LinRange(-kernel_dim / 2, kernel_dim / 2, kernel_dim)
-    T = kernel_params[1] / 2
-    g = zeros(Float64, n)
-    g[abs.(t).<=T] .= 1
+# function dp_gauss_expo_kernel(kernel_dim, kernel_params)
+#     s, alpha, n = kernel_params
+#     sigmas = exp.([log(s) + i * log(alpha) for i in 0:(n - 1)])
+#     return [dp_gausskernel(kernel_dim, sigma) for sigma in sigmas]
+# end
+
+function averaging_kernel(avg::RectAvg)
+    t = LinRange(-avg.kernel_dim / 2, avg.kernel_dim / 2, avg.kernel_dim)
+    T = avg.T / 2
+    g = zeros(Float64, avg.kernel_dim)
+    g[abs.(t) .<= T] .= 1
     g = g / sum(g)
     return g
 end
 
-averaging_kernel(tp::TimeParams) =
-    averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
-averaging_kernel(dp::DecompParams) =
-    averaging_kernel(dp.tp.kernel_type, dp.tp.kernel_params, dp.tp.kernel_dim)
 
-function averaging_kernel(
-    kernel_type::Symbol,
-    kernel_params::AbstractArray{<:Real},
-    kernel_dim::Integer,
-)
-    if kernel_type == :gaussian
-        avg_kernel = gausskernel(kernel_dim, kernel_params)
-    elseif kernel_type == :gaussian_exponential
-        avg_kernel = gauss_expo_kernel(kernel_dim, kernel_params)
-    elseif kernel_type == :rect
-        avg_kernel = rectkernel(kernel_dim, kernel_params)
-    else
-        avg_kernel = []
-        throw(ArgumentError("Kernel type $(kernel_type) not implemented"))
-    end
-    return avg_kernel
-end
+averaging_kernel(dp::DecompParams) = averaging_kernel(dp.tp)
+averaging_kernel(tp::TimeParams) = averaging_kernel(tp.kernel)
 
-function dt_fft(x::AbstractArray{<:Real})
-    N = length(x)
-    if iseven(N)
-        Nh = div(N, 2)
-        k = collect(Complex(0, 2pi / N) * ((-Nh+1):Nh))
-        k[end] = 0
-        circshift!(k, -Nh + 1)
-    else
-        Nh = div(N, 2)
-        k = collect(Complex(0, 2pi / N) * ((-Nh):Nh))
-        circshift!(k, -Nh)
-    end
-    return real(ifft(fft(x) .* k))
-end
+dt_averaging_kernel(dp::DecompParams) = dt_averaging_kernel(dp.tp)
+dt_averaging_kernel(tp::TimeParams) = dt_averaging_kernel(tp.kernel)
 
-dt_averaging_kernel(tp::TimeParams) =
-    dt_averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
-dt_averaging_kernel(dp::DecompParams) =
-    dt_averaging_kernel(dp.tp.kernel_type, dp.tp.kernel_params, dp.tp.kernel_dim)
+dp_averaging_kernel(dp::DecompParams) = dp_averaging_kernel(dp.tp)
+dp_averaging_kernel(tp::TimeParams) = dp_averaging_kernel(tp.kernel)
 
-function dt_averaging_kernel(
-    kernel_type::Symbol,
-    kernel_params::AbstractArray{<:Real},
-    kernel_dim::Integer,
-)
-    if kernel_type == :gaussian
-        avg_kernel = dt_gausskernel(kernel_dim, kernel_params)
-    elseif kernel_type == :gaussian_exponential
-        avg_kernel = dt_gauss_expo_kernel(kernel_dim, kernel_params)
-    else
-        avg_kernel = []
-        throw(ArgumentError("dt Kernel type $(kernel_type) not implemented"))
-    end
-    return avg_kernel
-end
+dt_averaging_kernel(avg::AvgKernel) = throw(error("No time differentiation for $(typeof(avg))"))
+dp_averaging_kernel(avg::AvgKernel) = throw(error("No parameter differentiation for $(typeof(avg))"))
 
-dp_averaging_kernel(tp::TimeParams) =
-    dp_averaging_kernel(tp.kernel_type, tp.kernel_params, tp.kernel_dim)
-dp_averaging_kernel(dp::DecompParams) =
-    dp_averaging_kernel(dp.tp.kernel_type, dp.tp.kernel_params, dp.tp.kernel_dim)
-
-function dp_averaging_kernel(
-    kernel_type::Symbol,
-    kernel_params::AbstractArray{<:Real},
-    kernel_dim::Integer,
-)
-    if kernel_type == :gaussian
-        avg_kernel = dp_gausskernel(kernel_dim, kernel_params)
-    elseif kernel_type == :gaussian_exponential
-        avg_kernel = dp_gauss_expo_kernel(kernel_dim, kernel_params)
-    else
-        avg_kernel = []
-        throw(ArgumentError("dt Kernel type $(kernel_type) not implemented"))
-    end
-    return avg_kernel
-end
+# function dt_fft(x::AbstractArray{<:Real})
+#     N = length(x)
+#     if iseven(N)
+#         Nh = div(N, 2)
+#         k = collect(Complex(0, 2pi / N) * ((-Nh + 1):Nh))
+#         k[end] = 0
+#         circshift!(k, -Nh + 1)
+#     else
+#         Nh = div(N, 2)
+#         k = collect(Complex(0, 2pi / N) * ((-Nh):Nh))
+#         circshift!(k, -Nh)
+#     end
+#     return real(ifft(fft(x) .* k))
+# end
 
 function GMWFrame(sp::ScaleParams)
+    if isnothing(sp.frame)
+        setframe!(sp)
+    end
+    return sp.frame
+end
+
+setframe!(sp::ScaleParams) = begin
     (; wave_dim, analytic) = sp
     params = wavelet_parameters(sp)
-    if isassigned(sp.frame)
-        frame = sp.frame[]
-    else
-        frame = GMWFrame(wave_dim, params; analytic)
-        sp.frame = Ref(frame)
-    end
-    return frame
+    frame = GMWFrame(wave_dim, params; analytic)
+    sp.frame = frame
+    return sp
 end
+
+freeframe!(dp::DecompParams) = freeframe!(dp.sp)
+freeframe!(sp::ScaleParams) = sp.frame = nothing
 
 GMWFrame(dp::DecompParams) = GMWFrame(ScaleParams(dp))
 
 function GMWFrame(
-    N::Integer,
-    params::AbstractArray{<:AbstractVector{<:Real}};
-    selfdual = true,
-    analytic = false,
-)
+        N::Integer,
+        params::AbstractArray{<:AbstractVector{<:Real}};
+        selfdual = true,
+        analytic = false,
+    )
     L = div(N, 2) + 1 # Analytical fft size
 
-    # Init frame 
+    # Init frame
     frame = [GMW.gmw(0, p[1], 0, p[3], p[4], N, :peak) for p in params]
     freq_peaks = map(p -> GMW.peak_n(p, 1), params)
-    # Build low-pass 
-    w = (0:(L-1)) / N
+    # Build low-pass
+    w = (0:(L - 1)) / N
     w0 = minimum(freq_peaks)
     low_pass = exp.(-(3 * log(10) / 20) * (w / w0) .^ 2) # -3dB at w=w0
     frame = [frame..., low_pass]
@@ -421,7 +387,7 @@ function GMWFrame(
         ψ_norm = sqrt.(sum(x -> abs2.(x), frame))
         if analytic
             if iseven(N)
-                ψ_norm[2:(L-1)] /= sqrt(2)
+                ψ_norm[2:(L - 1)] /= sqrt(2)
             else
                 ψ_norm[2:L] /= sqrt(2)
             end
@@ -445,30 +411,49 @@ function GMWFrame(
     frame = [circshift(g, default_phase_kernel(N)) for g in frame]
 
     # time deviations
-    # filters are symmetrical in time so we compute the time deviation only on the right side 
+    # filters are symmetrical in time so we compute the time deviation only on the right side
     t = LinRange(-1, 1, N) * div(N, 2)
     sigmas = [sqrt(sum(abs2, t .* g) / sum(abs2, g)) for g in frame]
     return GMWFrame(N, params, frame, freq_peaks, sigmas, selfdual, analytic)
 end
 
-function make_mem(C)
-    ckf = collect(Iterators.flatten(keys(C)))
-    ccount = map(k->(k,count(==(k),ckf)),unique(ckf))
-    filter!(x->x[2]>1,ccount)
-    mem = Dict{Symbol,Any}((k=>nothing for (k,v) in ccount))
+function zero_crossings(gmw::GMWFrame)
+    zc = Union{Integer, Nothing}[]
+    for g in gmw.frame
+        gfft = real(ifft(abs2.(fft(g))))
+        i_2 = findfirst(<(0), g)
+        if !isnothing(i_2)
+            i_1 = i_2 - 1
+            t_0 = i_2 - g[i_2] * (i_2 - i_1) / (g[i_2] - g[i_1])
+            t_0 -= 1
+        else
+            t_0 = nothing
+        end
+        push!(zc, t_0)
+    end
+    return zc
 end
 
-in_mem(mem,k) = k in keys(mem) && !isnothing(mem[k])
-store!(mem,k,v) = k in keys(mem) && isnothing(mem[k]) ? mem[k] = v : nothing
+
+occurence(s) = sort([k => count(==(k), s) for k in unique(s)], by = x -> x.second, rev = true)
+function make_mem(C, K_MEM)
+    ckf = Iterators.flatten(keys(C))
+    occ = occurence(ckf)[1:K_MEM]
+    return Dict{Symbol, Any}((x.first => nothing for x in occ))
+end
+in_mem(mem, k) = k in keys(mem) && !isnothing(mem[k])
+store!(mem, k, v) = k in keys(mem) && isnothing(mem[k]) ? mem[k] = v : nothing
 
 function cross_scalogram(
-    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
-    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
-    dp::DecompParams,
-    frame::Union{AbstractArray{<:AbstractArray{T}},GMWFrame},
-    avg_kernel::Union{AbstractVector{<:Real},AbstractVector{<:AbstractVector{<:Real}}},
-    K = 2,
-) where {T<:Union{Real,Complex}}
+        L::AbstractDict{Symbol, <:AbstractArray{<:Real}},
+        C::AbstractDict{Tuple{Symbol, Symbol}, Symbol},
+        dp::DecompParams,
+        frame::Union{AbstractArray{<:AbstractArray{T}}, GMWFrame},
+        avg_kernel::Union{AbstractVector{<:Real}, AbstractVector{<:AbstractVector{<:Real}}};
+        K_THREADS = min(8, Threads.nthreads()),
+        K_MEM = 1,
+        subsampling = true
+    ) where {T <: Union{Real, Complex}}
 
     (; tp, sp) = dp
     (; dt) = tp
@@ -487,74 +472,109 @@ function cross_scalogram(
             throw(error("Number of filters and averaging kernels are not equal"))
     end
     return_type = analytic ? ComplexF64 : Float64
-
-    WaveC = CConv(return_type, work_dim; padding=pad_sp)
-    KernelC = CConv(return_type, work_dim; padding = pad_tp)
-
-    out = Dict(c => Dict() for c in keys(C))
-    for C_p in Iterators.partition(C, K)
-        for (i, gmw) in enumerate(frame)
-            mem = make_mem(C_p)
-            avgk = many_kernels ? avg_kernel[i] : avg_kernel
-            load_kernel = true
-            for (c, _) in C_p
+    out = [ Dict() for _ in 1:K_THREADS]
+    chunks = collect(Iterators.partition(1:length(frame), cld(length(frame), K_THREADS)))
+    Threads.@threads for (chunk, d_out) in collect(zip(chunks, out))
+        WaveC = CConv(return_type, work_dim; padding = pad_sp)
+        KernelC = CConv(return_type, work_dim; padding = pad_tp)
+        load_avg_kernel = true
+        for i in chunk
+            mem = make_mem(C, K_MEM)
+            if many_kernels
+                avgk = avg_kernel[i]
+                load_kernel!(KernelC, avgk)
+            else
+                avgk = avg_kernel
+                if load_avg_kernel
+                    load_kernel!(KernelC, avgk)
+                    load_avg_kernel = false
+                end
+            end
+            gmw = frame[i]
+            load_kernel!(WaveC, gmw)
+            for c in keys(C)
                 (n, m) = c
                 x = L[n]
                 y = L[m]
-                x_i = in_mem(mem,n) ? mem[n] : WaveC(x,gmw;load_kernel)
-                store!(mem,n,x_i)
-                y_i = in_mem(mem,m) ? mem[m] : WaveC(y,gmw;load_kernel)
-                store!(mem,m,y_i)
-                f = KernelC(x_i .* y_i, avgk; load_kernel)
-                f = f[time_sampling]
-                out[c][i] = f
-                load_kernel=false
+                x_i = in_mem(mem, n) ? mem[n] : WaveC(x, gmw; load_kernel = false)
+                store!(mem, n, x_i)
+                y_i = in_mem(mem, m) ? mem[m] : WaveC(y, gmw; load_kernel = false)
+                store!(mem, m, y_i)
+                f = KernelC(x_i .* y_i, avgk; load_kernel = false)
+                if subsampling
+                    f = f[time_sampling]
+                end
+                d_out[(c, i)] = f
             end
         end
     end
+    out = merge(out...)
     # Output matrices
     out_hcat = Dict()
     for c in keys(C)
-        cs = [out[c][i] for i = 1:length(frame)]
+        cs = [out[(c, i)] for i in 1:length(frame)]
         out_hcat[C[c]] = stack(cs)
     end
     return out_hcat
 end
 
 cross_scalogram(
-    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
-    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
-    dp::DecompParams,
-) = cross_scalogram(L, C, dp, GMWFrame(dp), averaging_kernel(dp))
+    L::AbstractDict{Symbol, <:AbstractArray{<:Real}},
+    C::AbstractDict{Tuple{Symbol, Symbol}, Symbol},
+    dp::DecompParams;
+    kwargs...
+) = cross_scalogram(L, C, dp, GMWFrame(dp), averaging_kernel(dp); kwargs...)
 
 _xy_dict(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}) =
     (Dict(:x => x, :y => y), Dict((:x, :y) => :xy))
 
-cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...) =
-    cross_scalogram(_xy_dict(x, y)..., args...)[:xy]
+cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...; kwargs...) =
+    cross_scalogram(_xy_dict(x, y)..., args...; kwargs...)[:xy]
 
 dt_cross_scalogram(
-    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
-    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
-    dp,
-) = cross_scalogram(L, C, dp, GMWFrame(dp), dt_averaging_kernel(dp))
-dt_cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...) =
-    dt_cross_scalogram(_xy_dict(x, y)..., args...)[:xy]
+    L::AbstractDict{Symbol, <:AbstractArray{<:Real}},
+    C::AbstractDict{Tuple{Symbol, Symbol}, Symbol},
+    dp; kwargs ...
+) = cross_scalogram(L, C, dp, GMWFrame(dp), dt_averaging_kernel(dp); kwargs...)
+dt_cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...; kwargs...) =
+    dt_cross_scalogram(_xy_dict(x, y)..., args...; kwargs...)[:xy]
 
 dp_cross_scalogram(
-    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
-    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
-    dp,
-) = cross_scalogram(L, C, dp, GMWFrame(dp), dp_averaging_kernel(dp))
-dp_cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...) =
-    dp_cross_scalogram(_xy_dict(x, y)..., args...)[:xy]
+    L::AbstractDict{Symbol, <:AbstractArray{<:Real}},
+    C::AbstractDict{Tuple{Symbol, Symbol}, Symbol},
+    dp; kwargs...
+) = cross_scalogram(L, C, dp, GMWFrame(dp), dp_averaging_kernel(dp); kwargs...)
+dp_cross_scalogram(x::AbstractArray{<:Real}, y::AbstractArray{<:Real}, args...; kwargs...) =
+    dp_cross_scalogram(_xy_dict(x, y)..., args...; kwargs...)[:xy]
+
+function qc_cross_scalogram(qc, C, dp)
+    # Quality Control via error propagation
+    L_qc = Dict{Symbol, Array{Bool}}()
+    C_qc = Dict{Tuple{Symbol, Symbol}, Symbol}()
+    for c in keys(C)
+        x, y = c
+        xq = Symbol(x, :_QC)
+        yq = Symbol(y, :_QC)
+        v = Symbol(C[c], :_QC)
+        C_qc[(xq, yq)] = v
+
+        # Add fictitious errors on the border
+        qc_x = copy(qc[x])
+        qc_x[1] = qc_x[end] = true
+        qc_y = copy(qc[y])
+        qc_y[1] = qc_y[end] = true
+        L_qc[xq] = L_qc[yq] = qc[x] .|| qc[y]
+    end
+    scalo_qc = cross_scalogram(L_qc, C_qc, dp) #To look at error propagation in time-scale
+    return scalo_qc
+end
 
 
 function cross_correlation_rey(
-    L::AbstractDict{Symbol,<:AbstractArray{<:Real}},
-    C::AbstractDict{Tuple{Symbol,Symbol},Symbol},
-    tp::TimeParams,
-)
+        L::AbstractDict{Symbol, <:AbstractArray{<:Real}},
+        C::AbstractDict{Tuple{Symbol, Symbol}, Symbol},
+        tp::TimeParams; subsampling = true
+    )
     (; dt, padding) = tp
     allequal(length, L) || throw(error("Wrong size"))
     work_dim = length(first(values(L)))
@@ -563,29 +583,34 @@ function cross_correlation_rey(
     avg_kernel = averaging_kernel(tp)
     out = Dict()
     load_kernel = true
-    mem = make_mem(C) 
+    mem = make_mem(C)
     for c in keys(C)
         (n, m) = c
         x = L[n]
         y = L[m]
-        x_p = in_mem(mem,n) ? mem[n] : x - KernelC(x,avg_kernel;load_kernel)
-        store!(mem,n,x_p)
+        x_p = in_mem(mem, n) ? mem[n] : x - KernelC(x, avg_kernel; load_kernel)
+        store!(mem, n, x_p)
         load_kernel = false
-        y_p = in_mem(mem,m) ? mem[m] : y - KernelC(y,avg_kernel;load_kernel)
-        store!(mem,m,y_p)
-        out[C[c]] = KernelC(x_p .* y_p, avg_kernel; load_kernel)[time_sampling]
+        y_p = in_mem(mem, m) ? mem[m] : y - KernelC(y, avg_kernel; load_kernel)
+        store!(mem, m, y_p)
+        f = KernelC(x_p .* y_p, avg_kernel; load_kernel)
+        if subsampling
+            f = f[time_sampling]
+        end
+        out[C[c]] = f
     end
     return out
 end
 
 
+average(x, tp; subsampling) = average(x, tp, subsampling)
 average(x::AbstractArray{<:Real}, tp::TimeParams, subsampling::Bool = true) =
     average([x], tp, subsampling)[1]
 function average(
-    L::AbstractArray{<:AbstractArray{<:Real}},
-    tp::TimeParams,
-    subsampling::Bool = true,
-)
+        L::AbstractArray{<:AbstractArray{<:Real}},
+        tp::TimeParams,
+        subsampling::Bool = true,
+    )
     (; dt, padding) = tp
     allequal(length, L) || throw(error("Wrong size"))
     work_dim = length(L[1])
@@ -610,10 +635,10 @@ end
 dt_average(x::AbstractArray{<:Real}, tp::TimeParams, subsampling::Bool = true) =
     dt_average([x], tp, subsampling)[1]
 function dt_average(
-    L::AbstractArray{<:AbstractArray{<:Real}},
-    tp::TimeParams,
-    subsampling::Bool = true,
-)
+        L::AbstractArray{<:AbstractArray{<:Real}},
+        tp::TimeParams,
+        subsampling::Bool = true,
+    )
     (; dt, padding) = tp
     allequal(length, L) || throw(error("Wrong size"))
     work_dim = length(L[1])
@@ -638,10 +663,10 @@ end
 dp_average(x::AbstractArray{<:Real}, tp::TimeParams, subsampling::Bool = true) =
     dp_average([x], tp, subsampling)[1]
 function dp_average(
-    L::AbstractArray{<:AbstractArray{<:Real}},
-    tp::TimeParams,
-    subsampling::Bool = true,
-)
+        L::AbstractArray{<:AbstractArray{<:Real}},
+        tp::TimeParams,
+        subsampling::Bool = true,
+    )
     (; dt, padding) = tp
     allequal(length, L) || throw(error("Wrong size"))
     work_dim = length(L[1])
@@ -663,54 +688,31 @@ function dp_average(
     return out
 end
 
-# function scalogram_error_mask(work_dim::Int, gmw::GMWFrame; factor = 3, max_sigma = false)
-#     sigmas = gmw.sigmas
-#     mask = falses(work_dim, length(sigmas))
-#     max_sigma_val = ceil(Int, maximum(sigmas) * factor[1])
-#     for (i, s) in enumerate(sigmas)
-#         if max_sigma
-#             s = max_sigma_val
-#         else
-#             s = ceil(Int, s * factor[1])
-#         end
-#         mask[1:s, i] .= true
-#         mask[(end-s+1):end, i] .= true
-#     end
-#     return mask
-# end
-
-function error_mask(dp::DecompParams, work_dim::Int)
+function converror_mask(dp::DecompParams, work_dim::Int; subsampling = true)
     (; tp, sp) = dp
-    mask = vcat(1, falses(work_dim - 2), 1)
+    # Fake error on border
+    x = vcat(true, falses(work_dim - 2), true)
     frame = GMWFrame(sp)
     avg_kernel = averaging_kernel(tp)
-    out = cross_scalogram(mask, mask, dp, frame, avg_kernel)
-    mask = abs.(out) .> 1e-6
-    return mask
+    out = cross_scalogram(x, x, dp, frame, avg_kernel; subsampling)
+    out ./= out[1, :]'
+    return out .> 0.01
 end
 
-function error_mask(dp::DecompParams, mask::AbstractArray{Bool})
-    (; tp, sp) = dp
-    mask = copy(mask)
-    mask[1] = 1
-    mask[end] = 1
-    frame = GMWFrame(sp)
-    avg_kernel = averaging_kernel(tp)
-    out = cross_scalogram(mask, mask, dp, frame, avg_kernel)
-    mask = abs.(out) .> 1e-6
-    return mask
+function converror_mask(tp::TimeParams, work_dim::Int; subsampling = true)
+    # Fake error on border
+    mask = vcat(true, falses(work_dim - 2), true)
+    mask = average(mask, tp; subsampling)
+    mask ./= mask[1]
+    return mask .> 0.01
 end
 
-error_mask(tp::TimeParams) = error_mask(tp, tp.work_dim)
-function error_mask(tp::TimeParams, work_dim::Int)
-    mask = vcat(1, falses(work_dim - 2), 1)
-    mask = average(mask, tp) .> 1e-6
-    return mask
-end
-function error_mask(tp::TimeParams, mask::AbstractArray{Bool})
-    mask = copy(mask)
-    mask[1] = 1
-    mask[end] = 1
-    mask = average(mask, tp) .> 1e-6
+
+function error_mask(tp::TimeParams, mask::AbstractArray{Bool}; subsampling = true)
+    N = length(mask)
+    mask = average(mask, tp; subsampling)
+    mask = mask .> 0.01
+    convmask = converror_mask(tp, N)
+    mask = mask .|| convmask
     return mask
 end

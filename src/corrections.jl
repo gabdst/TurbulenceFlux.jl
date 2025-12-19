@@ -62,7 +62,7 @@ function (rmr::RepeatedMedianRegressor)(y::AbstractArray{<:Real})
         rmr.c[i] = y[i] - t_i * beta_rm
     end
     # Linear to Upper Triangular matrix (no diagonal, thus (n*(n-1)/2) points)
-    @turbo for k = 1:length(rmr.s)
+    @turbo for k in 1:length(rmr.s)
         i = n - 1 - floor(Int, sqrt(-8 * k + 4 * n * (n - 1) + 1) / 2 - 0.5)
         j = k + i + ((n - i + 1) * (n - i) - n * (n - 1)) ÷ 2
         rmr.s[k] = abs(rmr.c[i] - rmr.c[j])
@@ -70,7 +70,7 @@ function (rmr::RepeatedMedianRegressor)(y::AbstractArray{<:Real})
     mu_rm = nanmedian!(rmr.c)
     sigma_rm = rmr.d * nanquantile!(rmr.s, 1 / 4)
     # Compute the mean signal
-    @turbo for i = 1:n
+    @turbo for i in 1:n
         t_i = 2 * (i - 1) / (n - 1) - 1
         rmr.m[i] = mu_rm + t_i * beta_rm
     end
@@ -115,6 +115,14 @@ end
 Flag NaN values in an array `x` and return the corresponding Boolean vector.
 """
 flag_nan(x::AbstractArray{<:Real}) = isnan.(x)
+
+
+"""
+    flag_ec_nan(x::AbstractArray{<:Real})
+
+Flag -9999 values in array `x` an return the corresponding Boolean vector.
+"""
+flag_ec_nan(x::AbstractArray{<:Real}) = x .== -9999
 
 """
     interpolate_errors!(x::AbstractArray{<:Real}, m::AbstractVector{Bool})
@@ -170,15 +178,15 @@ found_lag == 10
 ```
 """
 function optim_timelag(
-    x::AbstractVector{Float64},
-    y::AbstractVector{Float64},
-    fc::Real,
-    fs::Real,
-)
+        x::AbstractVector{Float64},
+        y::AbstractVector{Float64},
+        fc::Real,
+        fs::Real,
+    )
     length(x) == length(y) || throw(error("Signals must be of the same size."))
     N = length(x)
     L = div(N, 2) + 1 # Analytical fft size
-    w = (0:(L-1)) / N
+    w = (0:(L - 1)) / N
     if fc > 0
         w0 = fc / fs
         low_pass = exp.(-(3 * log(10) / 20) * (w / w0) .^ 2) # -3dB at w=w0
@@ -186,7 +194,7 @@ function optim_timelag(
     elseif fc == 0
         high_pass = 1
     end
-    tau = 0:(L-1)
+    tau = 0:(L - 1)
     if iseven(N)
         tau = -vcat(tau, reverse(-tau .- 1)[3:end])
     else
@@ -229,7 +237,7 @@ X = X0 * Gy'
 X_rot, P, theta= planar_fit(X)
 ```
 """
-function planar_fit(X::AbstractArray{<:Real,2}, thresh = 1.1)
+function planar_fit(X::AbstractArray{<:Real, 2}, thresh = 1.1)
     if thresh < 1
         throw(ArgumentError("The threshold (`thresh`) should be > 1 (current: $thresh)"))
     end
@@ -260,10 +268,10 @@ function planar_fit(X::AbstractArray{<:Real,2}, thresh = 1.1)
     # vref_high = [1; 0; 0]
     # We check that it is well oriented (avoid a pi rotation)
     c_low = c_low * sign(vref_low' * c_low)
-    # Compute the axis normal to the plane scattered by v and c 
+    # Compute the axis normal to the plane scattered by v and c
     axis = cross(vref_low, c_low)
     axis = axis / norm(axis, 2)
-    # Find the angle of rotation beween v and c 
+    # Find the angle of rotation beween v and c
     theta = acos(vref_low' * c_low)
     # Create the corresponding rotation Matrix
     P = AngleAxis(theta, axis...)
@@ -279,8 +287,8 @@ struct ErrorRotationFailure <: Exception
     msg::String
     function ErrorRotationFailure()
         msg = """
-          Planar fit failed: Not enough data to perform planar fit or data corrupted. Check velocity signals."""
-        new(msg)
+        Planar fit failed: Not enough data to perform planar fit or data corrupted. Check velocity signals."""
+        return new(msg)
     end
 end
 
@@ -288,9 +296,18 @@ struct ErrorRotationAmbiguous <: Exception
     msg::String
     function ErrorRotationAmbiguous(thresh::Real)
         msg = """
-          Planar fit failed: Velocity components have similar energy along all directions or in the XZ or ZY plane (ratio < $(thresh)).
-          Check data preprocessing (filtering) or adjust `thresh` (current: $(thresh))."""
-        new(msg)
+        Planar fit failed: Velocity components have similar energy along all directions or in the XZ or ZY plane (ratio < $(thresh)).
+        Check data preprocessing (filtering) or adjust `thresh` (current: $(thresh))."""
+        return new(msg)
+    end
+end
+
+flag_out_of_limits(x, var) = begin
+    if var in keys(limits_variables)
+        lmin, lmax = getindex(limits_variables, var)
+        return x .< lmin .|| x .> lmax
+    else
+        return falses(size(x))
     end
 end
 
@@ -299,13 +316,15 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
     work_dim = length(df[:TIMESTAMP])
     qc = QualityControl()
     for v in var_names
-        update_quality_control!(qc, v, SparseVector{Bool,Int}(undef, work_dim))
+        update_quality_control!(qc, v, SparseVector{Bool, Int}(undef, work_dim))
     end
     # Note that df[!,v] does not allocate, it is a view (a pointer). df[:,v] would create a new array.
     if :despiking in cp.corrections
         for var in var_names
             # TODO: check QC vars in df if available
-            mask = flag_nan(df[var])
+            mask = flag_out_of_limits(df[var], var)
+            mask = flag_ec_nan(df[var]) .|| mask
+            mask = flag_nan(df[var]) .|| mask
             mask = flag_spikes(df[var], cp.window_size_despiking) .|| mask
             update_quality_control!(qc, var, mask)
             interpolate_errors!(df[var], mask)
@@ -340,10 +359,10 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
             @info "Found timelag for gas $var: $found_lag samples"
             if 0 < found_lag
                 if cp.timelag_max == 0 || found_lag < cp.timelag_max
-                    mask = SparseVector{Bool,Int}(undef, length(gas))
+                    mask = SparseVector{Bool, Int}(undef, length(gas))
                     mask .= get_qc(qc, var)
                     circshift!(mask, -found_lag)
-                    mask[end-found_lag+1:end] .= true
+                    mask[(end - found_lag + 1):end] .= true
                     update_quality_control!(qc, var, mask)
                     circshift!(gas, -found_lag)
                 end

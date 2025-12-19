@@ -15,7 +15,7 @@ import TurbulenceFlux: CConv
         y = cconv(x, circshift(kernel, phase); phase)
         @test isapprox(y, kernel)
     end
-    # With padding it is more tricky to check phase compensation since signals the output is cropped 
+    # With padding it is more tricky to check phase compensation since signals the output is cropped
     # Without phase compensation
     work_dim = 19
     kernel_dim = 5
@@ -33,8 +33,8 @@ import TurbulenceFlux: CConv
         phase = default_phase_kernel(kernel_dim)
         cconv = CConv(Float64, work_dim; padding)
         y = cconv(x, kernel; phase)
-        @test isapprox(y[1:(kernel_dim-phase)], kernel[1:(kernel_dim-phase)])
-        @test all(isapprox.(y[(kernel_dim-phase+1):end], 0, atol = 1e-6))
+        @test isapprox(y[1:(kernel_dim - phase)], kernel[1:(kernel_dim - phase)])
+        @test all(isapprox.(y[(kernel_dim - phase + 1):end], 0, atol = 1.0e-6))
     end
 
     @testset "Skipping Kernel Load" begin
@@ -60,12 +60,15 @@ end
     g = 3
     J = 6
     Q = 2
-    wmin = 0
-    wmax = pi
-    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+    fmin = 0
+    fmax = 0.5
+    sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim)
     gmw = GMWFrame(sp)
-    # Test Ref to frame in sp
-    @test sp.frame[] === gmw
+    @test sp.frame === gmw
+    freeframe!(sp)
+    @test sp.frame == nothing
+    setframe!(sp)
+    @test sp.frame !== gmw
     # Test Unit Power
     power = sum(x -> norm(x)^2, gmw.frame)
     @test isapprox(power, 1)
@@ -75,7 +78,7 @@ end
     @test isapprox(spec, target)
 
     # Analytic case
-    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim; analytic = true)
+    sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim; analytic = true)
     gmw = GMWFrame(sp)
     # Test Unit Power
     power = sum(x -> norm(x)^2, gmw.frame)
@@ -101,9 +104,9 @@ end
     g = 3
     J = 6
     Q = 2
-    wmin = 0
-    wmax = pi
-    sp = ScaleParams(b, g, J, Q, wmin, wmax, wave_dim)
+    fmin = 0
+    fmax = 0.5
+    sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim)
     gmw = GMWFrame(sp)
     x = vcat(1, zeros(work_dim - 1))
     cconv = CConv(Float64, work_dim)
@@ -118,54 +121,43 @@ end
 end
 
 @testset "Averaging Kernels" begin
+    kernel_types = [GaussAvg, RectAvg, ScaleAvg]
     sum_to_one(x::Vector{<:Real}) = isapprox(sum(x), 1)
     sum_to_one(x::Vector{<:Vector{<:Real}}) = all(sum_to_one.(x))
-    function default_params(kernel_type::Symbol, kernel_dim)
-        if kernel_type == :gaussian
-            [kernel_dim / 10]
-        elseif kernel_type == :gaussian_exponential
-            [kernel_dim / 10, 0.5, 4]
-        elseif kernel_type == :rect
-            [kernel_dim / 10]
-        else
-            throw(error(""))
-        end
-    end
+    default_params(kernel_type::Type{GaussAvg}, kernel_dim::Integer) = GaussAvg(kernel_dim, kernel_dim / 10)
+    default_params(kernel_type::Type{RectAvg}, kernel_dim::Integer) = RectAvg(kernel_dim, kernel_dim / 10)
+    default_params(kernel_type::Type{ScaleAvg}, kernel_dim::Integer) = ScaleAvg(kernel_dim, [GaussAvg(kernel_dim, kernel_dim / 10), GaussAvg(kernel_dim, kernel_dim / 20)])
     work_dim = 8192
     kernel_dim = 8192
-    kernel_type = :gaussian
+    kernel_type = kernel_types[1]
     x = randn(work_dim)
     y = randn(work_dim)
     xy = x .* y
-    kernel_params = default_params(kernel_type, kernel_dim)
-    tp = TimeParams(kernel_dim, kernel_type, kernel_params)
+    avg_kernel = default_params(kernel_type, kernel_dim)
+    tp = TimeParams(avg_kernel)
     xy_avg = average(xy, tp)
-    xy_dtavg = dt_average(xy, tp)
-    xy_dpavg = dp_average(xy, tp)
+    # xy_dtavg = dt_average(xy, tp) TODO
+    # xy_dpavg = dp_average(xy, tp)
 
-    @testset "Kernel: $kernel_type" for kernel_type in
-                                        [:gaussian, :gaussian_exponential, :rect],
-        kernel_dim in [32, 33]
-
-        kernel_params = default_params(kernel_type, kernel_dim)
-        tp = TimeParams(kernel_dim, kernel_type, kernel_params)
+    @testset "Kernel: $kernel_type" for kernel_type in kernel_types,
+            kernel_dim in [32, 33]
+        avg_kernel = default_params(kernel_type, kernel_dim)
+        tp = TimeParams(avg_kernel)
         avg_kernel = averaging_kernel(tp)
         @test sum_to_one(avg_kernel)
     end
-    @testset "Average func" for kernel_type in [:gaussian, :rect], kernel_dim in [16, 15]
+    @testset "Average func $(kernel_type)" for kernel_type in filter(!=(ScaleAvg), kernel_types) , kernel_dim in [16, 15]
         work_dim = 64
-        kernel_params = default_params(kernel_type, kernel_dim)
+        avg_kernel = default_params(kernel_type, kernel_dim)
         # Center dirac at phase of the averaging_kernel
         x = circshift(vcat(1, zeros(work_dim - 1)), default_phase_kernel(kernel_dim))
         # No padding
-        tp = TimeParams(kernel_dim, kernel_type, kernel_params)
+        tp = TimeParams(avg_kernel)
         x_avg = average(x, tp)
         @test isapprox(x_avg[1:kernel_dim], averaging_kernel(tp))
         # With padding
         tp = TimeParams(
-            kernel_dim,
-            kernel_type,
-            kernel_params;
+            avg_kernel,
             padding = work_dim - kernel_dim,
         )
         x_avg = average(x, tp)
@@ -182,25 +174,15 @@ end
         g = 3
         J = 6
         Q = 2
-        wmin = 0
-        wmax = pi
+        fmin = 0
+        fmax = pi
         x1 = circshift(vcat(1, zeros(work_dim - 1)), div(work_dim, 2)) # Center the signal
         x2 = circshift(x1, 1)
         x3 = x2 + x1
-        kernel_type = :gaussian
-        kernel_params = [kernel_dim / 10]
-        dp = DecompParams(;
-            b,
-            g,
-            J,
-            Q,
-            wmin,
-            wmax,
-            wave_dim,
-            kernel_dim,
-            kernel_type,
-            kernel_params,
-        )
+        avg_kernel = GaussAvg(kernel_dim, kernel_dim / 10)
+        sp = ScaleParams(b, g, J, Q, fmin, fmax, wave_dim)
+        tp = TimeParams(avg_kernel)
+        dp = DecompParams(sp, tp)
         gmw = GMWFrame(dp)
         avg_kernel = averaging_kernel(dp)
         L = Dict(:x1 => x1, :x2 => x2, :x3 => x3)
@@ -212,7 +194,7 @@ end
     out = cross_scalogram(L[:x1], L[:x1], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x1
     out = cross_scalogram(L[:x1], L[:x2], dp, gmw, avg_kernel)
-    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
+    @test isapprox(sum(out), 0, atol = 1.0e-6) # The flux is zero between x1 and x2
     out = cross_scalogram(L[:x1], L[:x3], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x3
     # Check that we obtain the same with or without next2pow padding
@@ -223,7 +205,7 @@ end
     out = cross_scalogram(L[:x1], L[:x1], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x1
     out = cross_scalogram(L[:x1], L[:x2], dp, gmw, avg_kernel)
-    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
+    @test isapprox(sum(out), 0, atol = 1.0e-6) # The flux is zero between x1 and x2
     out = cross_scalogram(L[:x1], L[:x3], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x3
     # An with reduced kernel sizes
@@ -232,14 +214,14 @@ end
     out = cross_scalogram(L[:x1], L[:x1], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x1
     out = cross_scalogram(L[:x1], L[:x2], dp, gmw, avg_kernel)
-    @test isapprox(sum(out), 0, atol = 1e-6) # The flux is zero between x1 and x2
+    @test isapprox(sum(out), 0, atol = 1.0e-6) # The flux is zero between x1 and x2
     out = cross_scalogram(L[:x1], L[:x3], dp, gmw, avg_kernel)
     @test isapprox(sum(out), 1) # The flux is one between x1 and x3
 
     # Multiple Signals
     C = Dict((:x1, :x2) => :x12, (:x1, :x3) => :x13, (:x2, :x3) => :x23, (:x2, :x1) => :x21)
     out = cross_scalogram(L, C, dp, gmw, avg_kernel)
-    @test isapprox(sum(out[:x12]), 0, atol = 1e-6)
+    @test isapprox(sum(out[:x12]), 0, atol = 1.0e-6)
     @test isapprox(sum(out[:x13]), 1)
     @test isapprox(sum(out[:x23]), 1)
     @test isapprox(out[:x12], out[:x21])

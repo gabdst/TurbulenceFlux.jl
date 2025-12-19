@@ -29,6 +29,16 @@ const mandatory_variables = (;
     mandatory_temp_variables...,
 )
 
+const limits_variables = (;
+    TA = (-40, 50),
+    T_SONIC = (-40, 50),
+    W = (-5, 5),
+    U = (-30, 30),
+    CO2 = (200, 900),
+    H2O = (0, 40),
+    CH4 = (1, 1000),
+)
+
 const gas_variables = (; CO2 = u"μmol/mol", H2O = u"mmol/mol")
 const output_variables = (;
     TIMESTAMP = NoUnits,
@@ -73,13 +83,13 @@ function ErrorVariableMissing(var::Symbol)
     msg = """
     Mandatory variable $var is missing. Please check dataframe.
     """
-    ErrorVariableMissing(msg)
+    return ErrorVariableMissing(msg)
 end
 function ErrorVariableMissing(var::Tuple{Vararg{Symbol}})
     msg = """
     At least one mandatory variable in $var is missing. Please check dataframe.
     """
-    ErrorVariableMissing(msg)
+    return ErrorVariableMissing(msg)
 end
 function check_variables(df::Dict)
     var_names = keys(df)
@@ -98,7 +108,7 @@ function check_variables(df::Dict)
     return true
 end
 
-const InputSignals = Dict{Symbol,AbstractArray}
+const InputSignals = Dict{Symbol, AbstractArray}
 
 function get_var_names(df::Dict)
     var_names = collect(keys(df))
@@ -111,31 +121,31 @@ end
     z_d::Float64 # Displacement Height
 end
 
-
 @kwdef mutable struct CorrectionParams
     timelag_max::Integer = 0
     fc_timelag::Real = 0.1 # Cutting frequency for timelag optimization, 0.1Hz by default
     rot_matrix::AbstractMatrix{<:Real} = zeros(Float64, 3, 3) # Rotation matrix used, zeros by default
-    timelags::Dict{Symbol,Int} = Dict{Symbol,Int}()# timelags in number of samples by gas names, :CO2 => 4
+    timelags::Dict{Symbol, Int} = Dict{Symbol, Int}() # timelags in number of samples by gas names, :CO2 => 4
     window_size_despiking::Integer = 200
     corrections::Vector{Symbol} = [CORRECTIONS...]
 end
-const QualityControl = Dict{Symbol,AbstractSparseArray{Bool,Int}}
+const QualityControl = Dict{Symbol, AbstractSparseArray{Bool, Int}}
 get_qc(qc::QualityControl, var::Symbol) = get(qc, var, false)
 get_qc(qc::QualityControl, var::Tuple{Vararg{Symbol}}) =
     reduce((a, b) -> a .|| b, map(a -> get_qc(qc, a), var))
 function update_quality_control!(
-    qc::QualityControl,
-    var::Tuple{Vararg{Symbol}},
-    mask::AbstractArray{Bool},
-)
+        qc::QualityControl,
+        var::Tuple{Vararg{Symbol}},
+        mask::AbstractArray{Bool},
+    )
     for v in var
         update_quality_control!(qc, v, mask)
     end
+    return
 end
 
 function update_quality_control!(qc::QualityControl, var::Symbol, mask::AbstractArray{Bool})
-    if var in keys(qc)
+    return if var in keys(qc)
         qc[var] .= mask # In place modification
     else
         qc[var] = sparse(mask) # Add new
@@ -154,6 +164,7 @@ export DecompParams,
     GMWFrame,
     AuxVars,
     CorrectionParams,
+    cross_correlation_rey,
     cross_scalogram,
     dt_cross_scalogram,
     dp_cross_scalogram,
@@ -171,7 +182,7 @@ export DecompParams,
     optim_timelag,
     planar_fit,
     normalized_frequency,
-    sigmas_wind,
+    mean_std_wind,
     ustar,
     mean_wind,
     mean_density,
@@ -190,5 +201,16 @@ export DecompParams,
     mandatory_temp_variables,
     gas_variables,
     output_variables,
-    FluxEstimate
+    FluxEstimate,
+    method_timestep,
+    converror_mask,
+    error_mask,
+    freeframe!,
+    setframe!,
+    zero_crossings,
+    AvgKernel,
+    GaussAvg,
+    ScaleAvg,
+    RectAvg,
+    apply_correction!
 end

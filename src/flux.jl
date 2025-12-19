@@ -76,6 +76,7 @@ A `FluxEstimationMethod` that estimates turbulent fluxes by thresholding the Rey
 - `dp::DecompParams`: Parameters for time-frequency decomposition.
 - `tp_aux::TimeParams`: Parameters for estimating auxiliary variables (e.g., mean wind speed, density).
 - `tr_tau::Real`: Threshold value for isolating vertical turbulent transport.
+- `tp_tau::DecompParams=dp.tp`: Alternative TimeParams for `TAUW_TF`
 - `sensitivity::Bool=true`: If `true`, computes sensitivity to time and averaging parameters.
 
 # Output
@@ -101,6 +102,7 @@ When passed to `estimate_flux`, this method returns a `FluxEstimate{ReynoldsEsti
     tr_tau::Real
     dp::DecompParams
     tp_aux::TimeParams
+    tp_tau::TimeParams = dp.tp
     sensitivity::Bool = true
 end
 
@@ -115,6 +117,7 @@ A `FluxEstimationMethod` that estimates turbulent fluxes by applying thresholdin
 - `tp_aux::TimeParams`: Parameters for estimating auxiliary variables (e.g., mean wind speed, density).
 - `tr_tau::Real`: Threshold for isolating vertical turbulent transport.
 - `tr_dtau::Real`: Threshold for isolating zeros in the Laplacian of `TAUW_TF`.
+- `tp_tau::DecompParams=dp.tp`: Alternative TimeParams for `TAUW_TF`
 - `span::Real=0.25`: Parameter influencing the locally weighted regression algorithm.
 - `sensitivity::Bool=true`: If `true`, computes sensitivity to time and averaging parameters.
 
@@ -147,6 +150,7 @@ When passed to `estimate_flux`, this method returns a `FluxEstimate{ReynoldsEsti
     tr_dtau::Real
     dp::DecompParams
     tp_aux::TimeParams
+    tp_tau::TimeParams = dp.tp
     span::Real = 0.25
     sensitivity::Bool = true
 end
@@ -162,94 +166,99 @@ Output structure returned by `estimate_flux`, containing the following fields:
 - `cp::CorrectionParams`: Updated correction parameters.
 - `method::T`: The `FluxEstimationMethod` used for estimation.
 """
-@kwdef struct FluxEstimate{T<:FluxEstimationMethod}
+@kwdef struct FluxEstimate{T <: FluxEstimationMethod}
     estimate::NamedTuple
     qc::QualityControl
     cp::CorrectionParams
     method::T
-    units::NamedTuple=NamedTuple(k=>output_variables[k] for k in intersect(keys(estimate),keys(output_variables)))
+    units::NamedTuple = NamedTuple(k => output_variables[k] for k in intersect(keys(estimate), keys(output_variables)))
 end
 
 
-function Base.show(io::IO,e::FluxEstimate{T}) where {T<:FluxEstimationMethod}
-    print(io,"Flux Estimation Results with method $(T)\n")
+function Base.show(io::IO, e::FluxEstimate{T}) where {T <: FluxEstimationMethod}
+    print(io, "Flux Estimation Results with method $(T)\n")
     S = string.(collect(keys(e.estimate)))
-    filter!(!endswith("_QC"),S)
-    if T <: Union{TurbuThreshold,TurbuLaplacian}
-    print(io,"\nTime-Frequency variables: ")
+    filter!(!endswith("_QC"), S)
+    if T <: Union{TurbuThreshold, TurbuLaplacian}
+        print(io, "\nTime-Frequency variables: ")
+        for s in S
+            ss = Symbol(s)
+            if !endswith(s, "_TF")
+                continue
+            end
+            print(io, s)
+            if ss in keys(output_variables)
+                unit = output_variables[ss]
+                print(io, " ($unit)")
+            end
+            print(io, ", ")
+        end
+        if "ETA" in S
+            print(io, "\nNormalized Frequency: ETA")
+        end
+    end
+    print(io, "\nTime variables: ")
     for s in S
         ss = Symbol(s)
-        if !endswith(s,"_TF")
+        if endswith(s, "_TF")
             continue
         end
-        print(io,s)
-        if ss in keys(output_variables)
-            unit = output_variables[ss]
-            print(io, " ($unit)")
-        end
-        print(io, ", ")
-    end
-    if "ETA" in S
-        print(io, "\nNormalized Frequency: ETA")
-    end
-    end
-    print(io,"\nTime variables: ")
-    for s in S
-        ss = Symbol(s)
-        if endswith(s,"_TF")
-            continue
-        end
-        print(io,s)
+        print(io, s)
         if ss in keys(output_variables)
             unit = output_variables[ss]
             if unit != NoUnits
                 print(io, " ($unit)")
             end
         end
-        print(io,", ")
+        print(io, ", ")
     end
-    print(io,"\nQuality Control variables are ending with _QC")
+    print(io, "\nQuality Control variables are ending with _QC")
+    return nothing
 end
 
 function tofluxunits(F::AbstractArray, density::AbstractVector, fluxtype::Symbol)
-    if fluxtype in (:H,:H_TF)
+    if fluxtype in (:H, :H_TF)
         F = F .* density * C_p #W/m2
-    elseif fluxtype in (:LE,:LE_TF)
+    elseif fluxtype in (:LE, :LE_TF)
         F = F .* density * LAMBDA #W/m2
-    elseif fluxtype in (:FC,:FC_TF)
+    elseif fluxtype in (:FC, :FC_TF)
         F = F .* density # umol/m2/s
-    elseif fluxtype in (:TAUW,:TAUW_TF)
+    elseif fluxtype in (:TAUW, :TAUW_TF)
     end
     return F
 end
 
 function normalized_frequency(
-    frequencies::AbstractVector{<:Real},
-    mean_wind::AbstractVector{<:Real},
-    distance::Real,
-)
+        frequencies::AbstractVector{<:Real},
+        mean_wind::AbstractVector{<:Real},
+        distance::Real,
+    )
     return distance * frequencies' ./ mean_wind
 end
 
 """
-    sigmas_wind([u,v,w],tp::TimeParams)
+    mean_std_wind([u,v,w],tp::TimeParams)
 
-Compute the standard deviations `U_SIGMA, V_SIGMA, W_SIGMA`.
+Compute the mean and standard deviations `U_MEAN, U_SIGMA, V_MEAN, ...`.
 """
-function sigmas_wind(wind_speeds, tp::TimeParams)
+mean_std_wind(u, v, w, tp::TimeParams) = mean_std_wind([u, v, w], tp)
+function mean_std_wind(wind_speeds, tp::TimeParams)
     length(wind_speeds) == 3 ||
         throw(error("Three wind speed signals expected, got $(length(wind_speeds))"))
     allequal(length, wind_speeds) ||
         throw(error("Got wind speed signals of different sizes"))
     u, v, w = wind_speeds
     subsampling = false
-    up = u - average(u, tp, subsampling)
-    vp = v - average(v, tp, subsampling)
-    wp = w - average(w, tp, subsampling)
+    U_MEAN = average(u, tp, subsampling)
+    V_MEAN = average(v, tp, subsampling)
+    W_MEAN = average(w, tp, subsampling)
+    up = u - U_MEAN
+    vp = v - V_MEAN
+    wp = w - W_MEAN
     U_SIGMA = sqrtz.(average(up .^ 2, tp))
     V_SIGMA = sqrtz.(average(vp .^ 2, tp))
     W_SIGMA = sqrtz.(average(wp .^ 2, tp))
-    return U_SIGMA, V_SIGMA, W_SIGMA
+    return U_MEAN, V_MEAN, W_MEAN, U_SIGMA, V_SIGMA, W_SIGMA
 end
 
 """
@@ -303,18 +312,9 @@ end
 
 Integrate along the scales the scalogram `scalo` given `mask`.
 """
-function flux_scale_integral(scalo::AbstractArray{<:Real,2}, mask::AbstractArray{Bool,2})
+function flux_scale_integral(scalo::AbstractArray{<:Real, 2}, mask::AbstractArray{Bool, 2})
     size(mask) == size(scalo) || throw(error("Wrong size between mask and scalogram"))
-    F = Vector{Float64}(undef, size(scalo, 1))
-    for j in axes(F, 1)
-        values = scalo[j, mask[j, :]]
-        if isempty(values)
-            F[j] = NaN
-        else
-            F[j] = sum(values)
-        end
-    end
-    return F
+    return sum(scalo .* mask, dims = 2)
 end
 
 """
@@ -323,16 +323,16 @@ end
 Compute the cross-scalogram of `WS1`, `WS2`, ... .
 """
 function flux_scalogram(
-    w::AbstractVector{<:Real},
-    s::AbstractVector{<:AbstractVector{<:Real}},
-    dp::DecompParams,
-)
+        w::AbstractVector{<:Real},
+        s::AbstractVector{<:AbstractVector{<:Real}},
+        dp::DecompParams,
+    )
     allequal(length, s) && length(w) == length(s[1]) ||
         throw(error("Signals must be of the same size."))
     (; tp, sp) = dp
     avg_kernel = averaging_kernel(tp)
     gmw = GMWFrame(sp)
-    C = [(1, i + 1) for i = 1:length(s)]
+    C = [(1, i + 1) for i in 1:length(s)]
     L = [w, s...]
     return cross_scalogram(L, C, dp, gmw, avg_kernel)
 end
@@ -359,10 +359,10 @@ end
 Compute the turbulence mask `TAUW_TF_M` given the estimation `method`.
 """
 function turbulence_mask(
-    tauw::AbstractArray{<:Real,2},
-    method::TurbuThreshold,
-    mask_error::Union{Nothing,AbstractArray{Bool}} = nothing,
-)
+        tauw::AbstractArray{<:Real, 2},
+        method::TurbuThreshold,
+        mask_error::Union{Nothing, AbstractArray{Bool}} = nothing,
+    )
     (; tr_tau) = method
     mask = tauw .> tr_tau
     if !isnothing(mask_error)
@@ -372,12 +372,12 @@ function turbulence_mask(
 end
 
 function turbulence_mask(
-    tauw::AbstractArray{<:Real,2},
-    WS::AbstractArray{<:Real,1},
-    aux::AuxVars,
-    method::TurbuLaplacian,
-    mask_error::Union{Nothing,AbstractArray{Bool}} = nothing,
-)
+        tauw::AbstractArray{<:Real, 2},
+        WS::AbstractArray{<:Real, 1},
+        aux::AuxVars,
+        method::TurbuLaplacian,
+        mask_error::Union{Nothing, AbstractArray{Bool}} = nothing,
+    )
     (; tr_tau, tr_dtau, span, dp) = method
     (; z_d) = aux
     S = size(tauw)
@@ -401,7 +401,7 @@ function turbulence_mask(
 
     # Reject low-pass filter i.e. at freq_p[end]
     mask = trues(S)
-    mask[:, freq_peaks.==0] .= false
+    mask[:, freq_peaks .== 0] .= false
 
     adj_mat = grid_adj_mat(S, mask) # 9-point grid adjacency matrix with removed vertices from mask
     weights_mat = adj_mat # Using the adjacency matrix as the weight matrix amounts to compute a normal laplacian
@@ -409,21 +409,21 @@ function turbulence_mask(
     g = MyGraph(adj_mat, weights_mat)
     L = laplacian_matrix(g)
     dtau = reshape(L * ltauw_v, S) # the laplacian is zero where mask is false
-    ltauw_v= reshape(ltauw_v, S)
+    ltauw_v = reshape(ltauw_v, S)
 
     detected = reshape(dtau .> tr_dtau, S) # Look at (t,eta) points with important minimas
     if !isnothing(mask_error)
         detected[mask_error] .= false # remove points with convolution errors
     end
-    detected[(eta.>1)] .= false # remove points above eta = 0
+    detected[(eta .> 1)] .= false # remove points above eta = 0
 
     if count(detected) == 0
         sg = eta[:, end]
         mask_advec = mask # Get the mask removing the advection + removing the mean value
     else
         #itp = _interpolate_eta(t[detected[:]], eta[detected[:]], λ,d) # Old way: Bspline interpolation + smoothness regularization to get interpolated value at each time t, extrapolate with constant values on the borders
-        # 
-        ts = collect(Iterators.flatten((t[view(detected, :, i)] for i = 1:size(detected, 2))))
+        #
+        ts = collect(Iterators.flatten((t[view(detected, :, i)] for i in 1:size(detected, 2))))
         itp = _locally_weighted_regression(ts, eta[detected], span)
         sg = itp.(t) #Time-Varying spectral gap
         mask_advec = (eta .> sg) .&& mask # Get the mask removing the advection + removing the mean value
@@ -468,15 +468,22 @@ function estimate_turbuvar(df::Dict, tp::TimeParams, qc::QualityControl)
     turbuvar[:USTAR] = USTAR
     update_quality_control!(qc, :USTAR, mask)
 
-    U_SIGMA, V_SIGMA, W_SIGMA = sigmas_wind([df[:U], df[:V], df[:W]], tp)
+    U_MEAN, V_MEAN, W_MEAN, U_SIGMA, V_SIGMA, W_SIGMA = mean_std_wind(df[:U], df[:V], df[:W], tp)
     turbuvar[:U_SIGMA] = U_SIGMA
+    turbuvar[:U_MEAN] = U_MEAN
     update_quality_control!(qc, :U_SIGMA, error_mask(tp, qc[:U]))
+    update_quality_control!(qc, :U_MEAN, error_mask(tp, qc[:U]))
 
     turbuvar[:V_SIGMA] = V_SIGMA
+    turbuvar[:V_MEAN] = V_MEAN
     update_quality_control!(qc, :V_SIGMA, error_mask(tp, qc[:V]))
+    update_quality_control!(qc, :V_MEAN, error_mask(tp, qc[:V]))
+
 
     turbuvar[:W_SIGMA] = W_SIGMA
+    turbuvar[:W_MEAN] = W_MEAN
     update_quality_control!(qc, :W_SIGMA, error_mask(tp, qc[:W]))
+    update_quality_control!(qc, :W_MEAN, error_mask(tp, qc[:W]))
     return turbuvar
 end
 
@@ -492,6 +499,9 @@ function estimate_auxvar(df::Dict, tp::TimeParams, qc::QualityControl)
     update_quality_control!(qc, :WS, mask)
     return auxvars
 end
+
+_C_dp(C) = Dict(k => Symbol(split(string(v), "_TF")[1], "_DSIGMA", "_TF") for (k, v) in C)
+_C_dt(C) = Dict(k => Symbol(split(string(v), "_TF")[1], "_DT", "_TF") for (k, v) in C)
 
 """
 
@@ -509,12 +519,13 @@ Estimate fluxes using input data, auxiliary variables, correction and method par
 - `::FluxEstimate`: An object containing the estimated fluxes and associated metadata.
 """
 estimate_flux(; df, aux, cp, method) = estimate_flux(df, aux, cp, method)
+estimate_flux(df, aux::AuxVars, cp::CorrectionParams, method::FluxEstimationMethod) = estimate_flux(to_dict(df), aux, cp, method)
 function estimate_flux(
-    df::Dict,
-    aux::AuxVars,
-    cp::CorrectionParams,
-    method::ReynoldsEstimation,
-)
+        df::Dict,
+        aux::AuxVars,
+        cp::CorrectionParams,
+        method::ReynoldsEstimation,
+    )
     (; tp, tp_aux) = method
     tp.dt == tp_aux.dt || throw(
         error(
@@ -558,12 +569,12 @@ function estimate_flux(
 end
 
 function estimate_flux(
-    df::Dict,
-    aux::AuxVars,
-    cp::CorrectionParams,
-    method::Union{TurbuThreshold,TurbuLaplacian},
-)
-    (; dp, tp_aux) = method
+        df::Dict,
+        aux::AuxVars,
+        cp::CorrectionParams,
+        method::Union{TurbuThreshold, TurbuLaplacian},
+    )
+    (; dp, tp_aux, tp_tau) = method
     (; tp) = dp
     df = deepcopy(df)
     check_variables(df)
@@ -574,50 +585,47 @@ function estimate_flux(
             "Different time sampling given: tp.dt = $(dp.tp.dt) against tp_aux.dt = $(tp_aux.dt)",
         ),
     )
+    dp.tp.dt == tp_tau.dt || throw(
+        error(
+            "Different time sampling given: tp.dt = $(dp.tp.dt) against tp_tau.dt = $(tp_tau.dt)",
+        ),
+    )
+    dp_tau = DecompParams(dp.sp, tp_tau)
     time_sampling = 1:tp_aux.dt:work_dim
     estimate = Dict()
     estimate[:TIMESTAMP] = df[:TIMESTAMP][time_sampling]
     df, qc = apply_correction!(df, cp, aux)
     auxvars = estimate_auxvar(df, tp_aux, qc)
     merge!(estimate, auxvars)
-    turbuvar = estimate_turbuvar(df, tp, qc)
+    turbuvar = estimate_turbuvar(df, tp_aux, qc)
     merge!(estimate, turbuvar)
-
-    C = Dict((:W, :W) => :WW_TF, (:W, :U) => :UW_TF, (:W, :V) => :VW_TF, (:W, :TA) => :H_TF)
+    C_turbu = Dict((:W, :W) => :WW_TF, (:W, :U) => :UW_TF, (:W, :V) => :VW_TF)
+    C_flux = Dict((:W, :TA) => :H_TF)
     if :CO2 in var_names
-        C[(:W, :CO2)] = :FC_TF
+        C_flux[(:W, :CO2)] = :FC_TF
     end
     if :H2O in var_names
-        C[(:W, :H2O)] = :LE_TF
+        C_flux[(:W, :H2O)] = :LE_TF
     end
-    L = Dict(k => df[k] for k in unique(Iterators.flatten(collect(keys(C)))))
-    @info "Cross-Scalogram computation for $(values(C))"
-    scalo = cross_scalogram(L, C, dp)
+    L_turbu = Dict(k => df[k] for k in unique(Iterators.flatten(collect(keys(C_turbu)))))
+    L_flux = Dict(k => df[k] for k in unique(Iterators.flatten(collect(keys(C_flux)))))
+    @info "Cross-Scalogram computation for $(union(values(C_turbu), values(C_flux)))"
+    scalo_turbu = cross_scalogram(L_turbu, C_turbu, dp_tau)
+    scalo_flux = cross_scalogram(L_flux, C_flux, dp)
+    scalo = merge(scalo_turbu, scalo_flux)
     for c in keys(scalo)
         scalo[c] = tofluxunits(scalo[c], estimate[:RHO], c)
     end
     scalo[:TAUW_TF] = _tauw(scalo[:WW_TF], scalo[:UW_TF], scalo[:VW_TF])
 
-    # Quality Control via error propagation
-    L_qc = Dict{Symbol,Array{Bool}}()
-    C_qc = Dict{Tuple{Symbol,Symbol},Symbol}()
-    for c in keys(C)
-        x, y = c
-        xq = Symbol(x, :_QC)
-        yq = Symbol(y, :_QC)
-        v = Symbol(C[c], :_QC)
-        C_qc[(xq, yq)] = v
-
-        # Add fictitious errors on the border
-        qc_x = copy(qc[x])
-        qc_x[1] = qc_x[end] = true
-        qc_y = copy(qc[y])
-        qc_y[1] = qc_y[end] = true
-        L_qc[xq] = L_qc[yq] = qc[x] .|| qc[y]
+    scalo_flux_qc = qc_cross_scalogram(qc, C_flux, dp)
+    scalo_turbu_qc = qc_cross_scalogram(qc, C_turbu, dp_tau)
+    scalo_qc = merge(scalo_flux_qc, scalo_turbu_qc)
+    for c in values(C_flux)
+        qc[Symbol(c, :_QC)] = sparse(abs.(scalo_qc[Symbol(c, :_QC)]) .> 1.0e-6) .|| qc[:RHO]
     end
-    scalo_qc = cross_scalogram(L_qc, C_qc, dp) #To look at error propagation in time-scale
-    for c in keys(scalo_qc)
-        qc[c] = sparse(abs.(scalo_qc[c]) .> 1e-6) .|| qc[:RHO]
+    for c in values(C_turbu)
+        qc[Symbol(c, :_QC)] = sparse(abs.(scalo_qc[Symbol(c, :_QC)]) .> 1.0e-6)
     end
     qc[:TAUW_TF_QC] = qc[:WW_TF_QC] .|| qc[:UW_TF_QC] .|| qc[:VW_TF_QC]
 
@@ -632,39 +640,57 @@ function estimate_flux(
         tm = turbulence_mask(scalo[:TAUW_TF], method)
         estimate[:TAUW_TF_M] = tm.TAUW_TF_M
     end
-    if method.sensitivity
-        C_dp =
-            Dict(k => Symbol(split(string(v), "_TF")[1], "_DSIGMA", "_TF") for (k, v) in C)
-        C_dt = Dict(k => Symbol(split(string(v), "_TF")[1], "_DT", "_TF") for (k, v) in C)
-        dp_scalo = dp_cross_scalogram(L, C_dp, dp)
-        dt_scalo = dt_cross_scalogram(L, C_dt, dp)
-        for c in keys(dp_scalo)
-            dp_scalo[c] = tofluxunits(dp_scalo[c], estimate[:RHO], c)
-        end
-        for c in keys(dt_scalo)
-            dt_scalo[c] = tofluxunits(dt_scalo[c], estimate[:RHO], c)
-        end
-        merge!(scalo, dp_scalo, dt_scalo)
-    end
-    merge!(estimate, scalo)
+
     # Scale Integral
-    for c in values(C)
+    for c in union(values(C_flux), values(C_turbu))
         var = Symbol(split(string(c), "_TF")[1])
         estimate[var] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
-        mask = sparse(flux_scale_integral(qc[Symbol(c, :_QC)], estimate[:TAUW_TF_M]).>1e-6)
+        mask = sparse(flux_scale_integral(qc[Symbol(c, :_QC)], estimate[:TAUW_TF_M]) .> 1.0e-6)
         update_quality_control!(qc, var, mask)
     end
-    estimate[:TAUW] = flux_scale_integral(scalo[:TAUW_TF],estimate[:TAUW_TF_M])
-    mask = sparse(flux_scale_integral(qc[:TAUW_TF_QC], estimate[:TAUW_TF_M]).>1e-6)
+    estimate[:TAUW] = flux_scale_integral(scalo[:TAUW_TF], estimate[:TAUW_TF_M])
+    mask = sparse(flux_scale_integral(qc[:TAUW_TF_QC], estimate[:TAUW_TF_M]) .> 1.0e-6)
     update_quality_control!(qc, :TAUW, mask)
-    for c in union(values(C_dp),values(C_dt))
-        var = Symbol(split(string(c), "_TF")[1])
-        estimate[var] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
+
+    if method.sensitivity
+        for (L, C, dp) in [(L_flux, C_flux, dp), (L_turbu, C_turbu, dp_tau)]
+            C_dp = _C_dp(C)
+            C_dt = _C_dt(C)
+            dp_scalo = dp_cross_scalogram(L, _C_dp(C), dp)
+            dt_scalo = dt_cross_scalogram(L, _C_dt(C), dp)
+            for c in keys(dp_scalo)
+                dp_scalo[c] = tofluxunits(dp_scalo[c], estimate[:RHO], c)
+            end
+            for c in keys(dt_scalo)
+                dt_scalo[c] = tofluxunits(dt_scalo[c], estimate[:RHO], c)
+            end
+            merge!(scalo, dp_scalo, dt_scalo)
+            for c in union(values(C_dp), values(C_dt))
+                var = Symbol(split(string(c), "_TF")[1])
+                estimate[var] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
+            end
+        end
     end
+    merge!(estimate, scalo)
     freq_peaks = frequency_peaks(dp)
     estimate[:ETA] = normalized_frequency(freq_peaks, estimate[:WS], aux.z_d)
     estimate = to_nt(merge_qc!(estimate, qc))
     return FluxEstimate(; estimate, qc, cp, method)
+end
+
+function method_timestep(method::Union{TurbuThreshold, TurbuLaplacian}, work_dim::Int, f::Float64)
+    mask = converror_mask(method.dp, work_dim; subsampling = false)
+    K = Union{Nothing, Int}[ findfirst(view(.!mask, :, i)) for i in axes(mask, 2) ]
+    K[isnothing.(K)] .= div(work_dim, 2)
+    freq_peaks = frequency_peaks(method.dp)
+    i = findmin(abs, freq_peaks .- f)[2]
+    return work_dim - 2 * floor(Int, K[i])
+end
+
+function method_timestep(method::ReynoldsEstimation, work_dim::Int)
+    mask = converror_mask(method.tp, work_dim; subsampling = false)
+    K = findfirst(.!mask)
+    return work_dim - 2 * K
 end
 
 # function turbu_extract_diffusion(
