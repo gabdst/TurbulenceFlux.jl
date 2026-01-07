@@ -729,7 +729,7 @@ function dp_average(
     return out
 end
 
-function converror_mask(dp::DecompParams, work_dim::Int; subsampling = true)
+function converror_mask(dp::DecompParams, work_dim::Int; subsampling = true, tr = 0.01)
     (; tp, sp) = dp
     # Fake error on border
     x = vcat(true, falses(work_dim - 2), true)
@@ -737,15 +737,15 @@ function converror_mask(dp::DecompParams, work_dim::Int; subsampling = true)
     avg_kernel = averaging_kernel(tp)
     out = cross_scalogram(x, x, dp, frame, avg_kernel; subsampling)
     out ./= out[1, :]'
-    return out .> 0.01
+    return out .> tr
 end
 
-function converror_mask(tp::TimeParams, work_dim::Int; subsampling = true)
+function converror_mask(tp::TimeParams, work_dim::Int; subsampling = true, tr = 0.01)
     # Fake error on border
     mask = vcat(true, falses(work_dim - 2), true)
     mask = average(mask, tp; subsampling)
     mask ./= mask[1]
-    return mask .> 0.01
+    return mask .> tr
 end
 
 
