@@ -351,7 +351,7 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
         update_quality_control!(qc, (:U, :V, :W), mask)
     end
     if :optim_timelag in cp.corrections
-        for var in intersect(gas_variables, var_names)
+        for var in intersect(keys(gas_variables), var_names)
             W = df[:W]
             gas = df[var]
             tau, out, found_lag = optim_timelag(W, gas, cp.fc_timelag, aux.fs)
