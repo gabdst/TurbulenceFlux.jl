@@ -342,6 +342,7 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
             cp.rot_matrix .= P # update rot matrix in correction params
             @info "Found rotation angle for z axis of $(rad2deg(theta))"
         else
+            @info "Using rotation matrix given in CorrectionParams variable"
             X_rot = X * cp.rot_matrix
         end
         df[:U] .= X_rot[:, 1]
@@ -371,7 +372,7 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
             end
         end
     end
-    # TODO: add sonic temperature correction
+    # TODO: add sonic temperature correction i.e. TA = T_SONIC / (1+0.51q) where q is the specific humidity
     if !(:TA in var_names)
         # T_SONIC should be present
         # For now we overwrite TA with T_SONIC
