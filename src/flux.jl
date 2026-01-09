@@ -155,6 +155,16 @@ When passed to `estimate_flux`, this method returns a `FluxEstimate{ReynoldsEsti
     sensitivity::Bool = true
 end
 
+@kwdef struct TurbuMorpho <: FluxEstimationMethod
+    tr_tau::Real
+    a::Real = 1
+    N::Integer = 7
+    dp::DecompParams
+    tp_aux::TimeParams
+    tp_tau::TimeParams = dp.tp
+    sensitivity::Bool = true
+end
+
 """
     FluxEstimate{T<:FluxEstimationMethod}
 
@@ -258,6 +268,10 @@ function mean_std_wind(wind_speeds, tp::TimeParams)
     U_SIGMA = sqrtz.(average(up .^ 2, tp))
     V_SIGMA = sqrtz.(average(vp .^ 2, tp))
     W_SIGMA = sqrtz.(average(wp .^ 2, tp))
+    sampling = 1:tp.dt:length(U_MEAN)
+    U_MEAN = U_MEAN[sampling]
+    V_MEAN = V_MEAN[sampling]
+    W_MEAN = W_MEAN[sampling]
     return U_MEAN, V_MEAN, W_MEAN, U_SIGMA, V_SIGMA, W_SIGMA
 end
 
@@ -312,9 +326,9 @@ end
 
 Integrate along the scales the scalogram `scalo` given `mask`.
 """
-function flux_scale_integral(scalo::AbstractArray{<:Real, 2}, mask::AbstractArray{Bool, 2})
+function flux_scale_integral(scalo::AbstractArray{<:Real, 2}, mask::AbstractArray{<:Real, 2})
     size(mask) == size(scalo) || throw(error("Wrong size between mask and scalogram"))
-    return sum(scalo .* mask, dims = 2)
+    return vec(sum(scalo .* mask, dims = 2))
 end
 
 """
@@ -365,6 +379,7 @@ function turbulence_mask(
     )
     (; tr_tau) = method
     mask = tauw .> tr_tau
+    mask[:, end] .= false # always remove zero frequency band
     if !isnothing(mask_error)
         mask = mask .&& .!mask_error
     end
@@ -436,6 +451,30 @@ function turbulence_mask(
         TAUW_TF_MADVEC = mask_advec,
         DTAUW_TF = dtau,
     )
+end
+
+function turbulence_mask(
+        tauw::AbstractArray{<:Real, 2},
+        WS::AbstractArray{<:Real, 1},
+        aux::AuxVars,
+        method::TurbuMorpho,
+        mask_error::Union{Nothing, AbstractArray{Bool}} = nothing,
+    )
+    (; tr_tau, a, N, dp) = method
+    (; z_d) = aux
+    freq_peaks = frequency_peaks(dp)
+    eta = normalized_frequency(freq_peaks, WS, z_d)
+    B = tauw .> tr_tau
+    B[:, end] .= false # always remove zero frequency band
+    R = circle(N)
+    Bo = erode(B, R)
+    Bf = open_reconstruct(Bo, B, circle(3))
+    mask = Bf
+    if !isnothing(mask_error)
+        mask = mask .&& .!mask_error
+    end
+    mask = smooth_mask(mask, a)
+    return (; TAUW_TF_M = mask)
 end
 
 function _locally_weighted_regression(t, eta, span = 0.25)
@@ -521,7 +560,7 @@ Estimate fluxes using input data, auxiliary variables, correction and method par
 estimate_flux(; df, aux, cp, method) = estimate_flux(df, aux, cp, method)
 estimate_flux(df, aux::AuxVars, cp::CorrectionParams, method::FluxEstimationMethod) = estimate_flux(to_dict(df), aux, cp, method)
 function estimate_flux(
-        df::Dict,
+        df::Dict{Symbol, <:Any},
         aux::AuxVars,
         cp::CorrectionParams,
         method::ReynoldsEstimation,
@@ -569,10 +608,10 @@ function estimate_flux(
 end
 
 function estimate_flux(
-        df::Dict,
+        df::Dict{Symbol, <:Any},
         aux::AuxVars,
         cp::CorrectionParams,
-        method::Union{TurbuThreshold, TurbuLaplacian},
+        method::Union{TurbuThreshold, TurbuLaplacian, TurbuMorpho},
     )
     (; dp, tp_aux, tp_tau) = method
     (; tp) = dp
@@ -636,6 +675,9 @@ function estimate_flux(
         estimate[:DTAUW_TF] = tm.DTAUW_TF
         estimate[:TAUW_TF_M] = tm.TAUW_TF_M
         estimate[:TAUW_TF_MADVEC] = tm.TAUW_TF_MADVEC
+    elseif method isa TurbuMorpho
+        tm = turbulence_mask(scalo[:TAUW_TF], estimate[:WS], aux, method)
+        estimate[:TAUW_TF_M] = tm.TAUW_TF_M
     elseif method isa TurbuThreshold
         tm = turbulence_mask(scalo[:TAUW_TF], method)
         estimate[:TAUW_TF_M] = tm.TAUW_TF_M
@@ -678,13 +720,23 @@ function estimate_flux(
     return FluxEstimate(; estimate, qc, cp, method)
 end
 
-function method_timestep(method::Union{TurbuThreshold, TurbuLaplacian}, work_dim::Int, f::Float64)
+function method_range_and_timestep(method::Union{TurbuThreshold, TurbuLaplacian, TurbuMorpho}, work_dim::Integer, fs::Real, f::Real; rounding = :Hour)
     mask = converror_mask(method.dp, work_dim; subsampling = false)
+    sampling = 1:method.dp.tp.dt:work_dim
     K = Union{Nothing, Int}[ findfirst(view(.!mask, :, i)) for i in axes(mask, 2) ]
     K[isnothing.(K)] .= div(work_dim, 2)
-    freq_peaks = frequency_peaks(method.dp)
+    freq_peaks = fs * frequency_peaks(method.dp)
     i = findmin(abs, freq_peaks .- f)[2]
-    return work_dim - 2 * floor(Int, K[i])
+    if rounding == :Hour
+        N = round(Int, K[i] / (fs * 3600)) * fs * 3600
+    elseif isnothing(rounding)
+        N = K[i]
+    end
+    range = trues(work_dim)
+    range[1:N] .= false
+    range[(end - N + 1):end] .= false
+    timestep = work_dim - 2 * N
+    return range[sampling], timestep
 end
 
 function method_timestep(method::ReynoldsEstimation, work_dim::Int)

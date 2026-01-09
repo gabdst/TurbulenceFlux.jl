@@ -339,8 +339,12 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
         X = [df[:U] df[:V] df[:W]]
         if iszero(cp.rot_matrix)
             X_rot, P, theta = planar_fit(X)
-            cp.rot_matrix .= P # update rot matrix in correction params
-            @info "Found rotation angle for z axis of $(rad2deg(theta))"
+            if abs(rad2deg(theta)) < cp.angle_z_max
+                @info "Found rotation angle for z axis of $(rad2deg(theta))"
+                cp.rot_matrix .= P # update rot matrix in correction params
+            else
+                @warn "Found rotation angle for z axis of $(rad2deg(theta)) bigger than max angle $(cp.angle_z_max). Ignoring."
+            end
         else
             @info "Using rotation matrix given in CorrectionParams variable"
             X_rot = X * cp.rot_matrix
@@ -368,7 +372,7 @@ function apply_correction!(df::Dict, cp::CorrectionParams, aux::AuxVars)
                     circshift!(gas, -found_lag)
                 end
             elseif found_lag < 0
-                throw(error("found negative timelag for gas $var"))
+                @warn "Found negative timelag for gas $var. Ignoring"
             end
         end
     end

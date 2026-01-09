@@ -11,7 +11,8 @@ using LinearAlgebra,
     PhysicalConstants,
     Unitful,
     DataInterpolations,
-    Bessels
+    Bessels,
+    ImageMorphology
 import GeneralizedMorseWavelets as GMW
 import Loess
 
@@ -92,26 +93,20 @@ function ErrorVariableMissing(var::Tuple{Vararg{Symbol}})
     """
     return ErrorVariableMissing(msg)
 end
-function check_variables(df::Dict)
+function check_variables(df::Dict{Symbol, <:Any})
     var_names = keys(df)
     for v in keys(mandatory_variables)
-        if v isa Symbol
-            if v in keys(mandatory_temp_variables)
-                !(isdisjoint(keys(mandatory_temp_variables), var_names)) ||
-                    throw(ErrorVariableMissing(keys(mandatory_temp_variables)))
-            else
-                v in var_names || throw(ErrorVariableMissing(v))
-            end
+        if v in keys(mandatory_temp_variables)
+            !(isdisjoint(keys(mandatory_temp_variables), var_names)) ||
+                throw(ErrorVariableMissing(keys(mandatory_temp_variables)))
         else
-            throw(error("Unexpected variable-name type"))
+            v in var_names || throw(ErrorVariableMissing(v))
         end
     end
     return true
 end
 
-const InputSignals = Dict{Symbol, AbstractArray}
-
-function get_var_names(df::Dict)
+function get_var_names(df::Dict{Symbol, <:Any})
     var_names = collect(keys(df))
     popat!(var_names, findfirst(==(:TIMESTAMP), var_names))
     return var_names
@@ -124,6 +119,7 @@ end
 
 @kwdef mutable struct CorrectionParams
     timelag_max::Integer = 0
+    angle_z_max::Real = 90
     fc_timelag::Real = 0.1 # Cutting frequency for timelag optimization, 0.1Hz by default
     rot_matrix::AbstractMatrix{<:Real} = zeros(Float64, 3, 3) # Rotation matrix used, zeros by default
     timelags::Dict{Symbol, Int} = Dict{Symbol, Int}() # timelags in number of samples by gas names, :CO2 => 4
@@ -157,6 +153,7 @@ include("utils.jl")
 include("conv.jl")
 include("graph.jl")
 include("corrections.jl")
+include("morpho.jl")
 include("flux.jl")
 
 export DecompParams,
@@ -194,6 +191,7 @@ export DecompParams,
     ReynoldsEstimation,
     TurbuThreshold,
     TurbuLaplacian,
+    TurbuMorpho,
     turbulence_mask,
     estimate_flux,
     default_phase_kernel,
@@ -203,7 +201,7 @@ export DecompParams,
     gas_variables,
     output_variables,
     FluxEstimate,
-    method_timestep,
+    method_range_and_timestep,
     converror_mask,
     error_mask,
     freeframe!,
