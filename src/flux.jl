@@ -171,14 +171,13 @@ end
 Output structure returned by `estimate_flux`, containing the following fields:
 
 # Fields
-- `estimate::NamedTuple`: Variables computed by the method `T`.
-- `qc::QualityControl`: Quality control variables for both input and output.
+- `estimate::NamedTuple`: Variables computed by the method `T` along with quality control variables.
 - `cp::CorrectionParams`: Updated correction parameters.
 - `method::T`: The `FluxEstimationMethod` used for estimation.
 """
 @kwdef struct FluxEstimate{T <: FluxEstimationMethod}
     estimate::NamedTuple
-    qc::QualityControl
+    # qc::QualityControl
     cp::CorrectionParams
     method::T
     units::NamedTuple = NamedTuple(k => output_variables[k] for k in intersect(keys(estimate), keys(output_variables)))
@@ -493,8 +492,11 @@ function _locally_weighted_regression(t, eta, span = 0.25)
 end
 
 function merge_qc!(estimate, qc)
-    for k in intersect(keys(estimate), keys(qc))
+    for k in keys(qc)
         k_qc = Symbol(k, :_QC)
+        if k_qc in keys(estimate)
+            throw(error("Attempt to override already defined quality control variable $k_qc"))
+        end
         estimate[k_qc] = qc[k]
     end
     return estimate
@@ -604,7 +606,7 @@ function estimate_flux(
         update_quality_control!(qc, v, error_mask(tp, qc[n] .|| qc[m]) .|| qc[:RHO])
     end
     estimate = to_nt(merge_qc!(estimate, qc))
-    return FluxEstimate(; estimate, qc, cp, method)
+    return FluxEstimate(; estimate, cp, method)
 end
 
 function estimate_flux(
@@ -661,12 +663,12 @@ function estimate_flux(
     scalo_turbu_qc = qc_cross_scalogram(qc, C_turbu, dp_tau)
     scalo_qc = merge(scalo_flux_qc, scalo_turbu_qc)
     for c in values(C_flux)
-        qc[Symbol(c, :_QC)] = sparse(abs.(scalo_qc[Symbol(c, :_QC)]) .> 1.0e-6) .|| qc[:RHO]
+        qc[c] = sparse(abs.(scalo_qc[c]) .> 1.0e-6) .|| qc[:RHO]
     end
     for c in values(C_turbu)
-        qc[Symbol(c, :_QC)] = sparse(abs.(scalo_qc[Symbol(c, :_QC)]) .> 1.0e-6)
+        qc[c] = sparse(abs.(scalo_qc[c]) .> 1.0e-6)
     end
-    qc[:TAUW_TF_QC] = qc[:WW_TF_QC] .|| qc[:UW_TF_QC] .|| qc[:VW_TF_QC]
+    qc[:TAUW_TF] = qc[:WW_TF] .|| qc[:UW_TF] .|| qc[:VW_TF]
 
     if method isa TurbuLaplacian
         tm =
@@ -687,11 +689,11 @@ function estimate_flux(
     for c in union(values(C_flux), values(C_turbu))
         var = Symbol(split(string(c), "_TF")[1])
         estimate[var] = flux_scale_integral(scalo[c], estimate[:TAUW_TF_M])
-        mask = sparse(flux_scale_integral(qc[Symbol(c, :_QC)], estimate[:TAUW_TF_M]) .> 1.0e-6)
+        mask = sparse(flux_scale_integral(qc[c], estimate[:TAUW_TF_M]) .> 1.0e-6)
         update_quality_control!(qc, var, mask)
     end
     estimate[:TAUW] = flux_scale_integral(scalo[:TAUW_TF], estimate[:TAUW_TF_M])
-    mask = sparse(flux_scale_integral(qc[:TAUW_TF_QC], estimate[:TAUW_TF_M]) .> 1.0e-6)
+    mask = sparse(flux_scale_integral(qc[:TAUW_TF], estimate[:TAUW_TF_M]) .> 1.0e-6)
     update_quality_control!(qc, :TAUW, mask)
 
     if method.sensitivity
@@ -717,7 +719,7 @@ function estimate_flux(
     freq_peaks = frequency_peaks(dp)
     estimate[:ETA] = normalized_frequency(freq_peaks, estimate[:WS], aux.z_d)
     estimate = to_nt(merge_qc!(estimate, qc))
-    return FluxEstimate(; estimate, qc, cp, method)
+    return FluxEstimate(; estimate, cp, method)
 end
 
 function method_range_and_timestep(method::Union{TurbuThreshold, TurbuLaplacian, TurbuMorpho}, work_dim::Integer, fs::Real, f::Real; rounding = :Hour)

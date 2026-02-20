@@ -592,19 +592,15 @@ function qc_cross_scalogram(qc, C, dp)
     # Quality Control via error propagation
     L_qc = Dict{Symbol, Array{Bool}}()
     C_qc = Dict{Tuple{Symbol, Symbol}, Symbol}()
+    C_qc = copy(C)
     for c in keys(C)
         x, y = c
-        xq = Symbol(x, :_QC)
-        yq = Symbol(y, :_QC)
-        v = Symbol(C[c], :_QC)
-        C_qc[(xq, yq)] = v
-
         # Add fictitious errors on the border
         qc_x = copy(qc[x])
         qc_x[1] = qc_x[end] = true
         qc_y = copy(qc[y])
         qc_y[1] = qc_y[end] = true
-        L_qc[xq] = L_qc[yq] = qc[x] .|| qc[y]
+        L_qc[x] = L_qc[y] = qc[x] .|| qc[y]
     end
     scalo_qc = cross_scalogram(L_qc, C_qc, dp) #To look at error propagation in time-scale
     return scalo_qc
